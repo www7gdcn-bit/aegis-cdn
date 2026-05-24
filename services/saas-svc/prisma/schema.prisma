@@ -38,9 +38,39 @@ model Tenant {
   users        User[]
   subscription Subscription?
   orders       Order[]
+  edgeProvision PendingEdgeProvision?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+}
+
+// Phase 3 Step 3:GoEdge user 同步状态机 + retry queue。
+//
+// 一个 Tenant 对应 0 或 1 条记录(@@unique tenantId):
+//   - register 时 saas-svc.AuthService 异步 scheduleProvision() 创建 status=pending 一条
+//   - cron 每 30s 扫 status in [pending, retrying] AND nextTryAt <= now,批量调 bff-edge
+//   - 成功 → status=done,同时回写 Tenant.edgeUserId + edgeUserSyncedAt
+//   - 瞬时失败(grpc UNAVAILABLE/DEADLINE/未就绪) → status=retrying,attempts++,
+//     指数退避 nextTryAt
+//   - 永久失败(ALREADY_EXISTS/INVALID_ARGUMENT/或超过 maxAttempts) → status=failed,
+//     不再自动重试;运营可走 admin retry 端点手动重置
+//
+// Tenant.edgeUserId 真正写入只发生在本表 status=done 那次 transaction,二者一致性强保证。
+model PendingEdgeProvision {
+  id          Int       @id @default(autoincrement())
+  tenantId    Int       @unique
+  tenant      Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  status      String    @default("pending")  // pending | retrying | done | failed
+  attempts    Int       @default(0)
+  maxAttempts Int       @default(8)          // 超过即 status=failed(运营介入)
+  lastError   String?
+  lastErrorAt DateTime?
+  nextTryAt   DateTime  @default(now())
+  resolvedAt  DateTime?                      // done / failed 终态时间戳
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@index([status, nextTryAt])              // cron 扫描热路径
 }
 
 model User {

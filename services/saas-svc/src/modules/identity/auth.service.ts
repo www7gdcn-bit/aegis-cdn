@@ -1,12 +1,18 @@
-import { ConflictException, Injectable, UnauthorizedException } from "@nestjs/common";
+import { ConflictException, Injectable, Logger, UnauthorizedException } from "@nestjs/common";
 import { JwtService } from "@nestjs/jwt";
 import * as bcrypt from "bcryptjs";
 import { PrismaService } from "../../core/prisma/prisma.service";
+import { EdgeProvisionService } from "../edge-provision/edge-provision.service";
 import { LoginDto, RegisterDto } from "./dto";
 
 @Injectable()
 export class AuthService {
-  constructor(private prisma: PrismaService, private jwt: JwtService) {}
+  private readonly logger = new Logger(AuthService.name);
+  constructor(
+    private prisma: PrismaService,
+    private jwt: JwtService,
+    private edgeProvision: EdgeProvisionService,
+  ) {}
 
   private async sign(user: {
     id: number;
@@ -20,7 +26,6 @@ export class AuthService {
       tenantId: user.tenantId,
       role: user.role,
       email: user.email,
-      // Phase 3 后,Tenant.edgeUserId 被 bff-edge 写入;放进 JWT 减少跨服务往返
       edgeUserId: user.edgeUserId ?? null,
     });
     return { access_token: token, user };
@@ -44,14 +49,21 @@ export class AuthService {
         role,
       },
     });
-    // Phase 2 阶段 tenant.edgeUserId 为 null(bff-edge 尚未上线);
-    // Phase 3 起 saas-svc 在此处异步 POST bff-edge /internal/user/provision 同步创建 GoEdge user
+
+    // 异步触发 GoEdge user 同步(Phase 3 Step 3) — 完全不阻塞 register,失败入 retry queue
+    // 不 await,也不 throw — 任何异常都不影响用户拿到 access_token
+    setImmediate(() => {
+      this.edgeProvision.scheduleProvision(tenant.id).catch((e) => {
+        this.logger.warn(`scheduleProvision tenant=${tenant.id} threw async: ${e?.message || e}`);
+      });
+    });
+
     return this.sign({
       id: user.id,
       tenantId: user.tenantId,
       role: user.role,
       email: user.email,
-      edgeUserId: tenant.edgeUserId,
+      edgeUserId: null, // 注册瞬间一定 null;前端可轮询 /edge-provision/me 拿到 edgeUserId
     });
   }
 

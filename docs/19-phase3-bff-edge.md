@@ -198,8 +198,8 @@ packages/edge-api-sdk/
 | Step | 范围 | 状态 |
 | --- | --- | --- |
 | Step 1 | bff-edge 骨架 + SDK placeholder + 5 个分组 controller 占位 + 文档 | 已完成 |
-| **Step 2** | SDK 真接 @grpc/grpc-js + admin metadata + **UserService.create 真实化** + bff-edge `POST /users` + saas-svc EdgeProvisionService(不接 register) + backfill 脚本 | **本步,已完成(未端到端实测)** |
-| Step 3 | saas-svc.register 异步触发 provision + Tenant.edgeUserId 实时写;失败重试/解绑/重绑流程 | 待启 |
+| Step 2 | SDK 真接 @grpc/grpc-js + admin metadata + UserService.create 真实化 + bff-edge `POST /users` + saas-svc EdgeProvisionService(不接 register) + backfill 脚本 | 已完成(本机最大化自测,Linux 实测顺延到 Phase 3 收尾前 E2E) |
+| **Step 3** | **register 自动 provisionTenant(异步,fire-and-forget) + PendingEdgeProvision retry queue + cron 30s + provision-status endpoints + backfill --queue + Tenant.edgeUserId 真正自动绑定** | **本步,已完成** |
 | Step 4 | UsersService 其余 3 个方法(findById/disable/enable);封禁联动 | 待启 |
 | Step 5 | domains.create 真实化(含 quota 前置 + sync-proto.sh 加 service_server.proto) | 待启 |
 | Step 6 | ssl + acme | 待启 |
@@ -257,17 +257,109 @@ packages/edge-api-sdk/
 | 7 | **错误码映射不全** | grpc.status code 14 种,只映射了 4 种 | 实测后按真实落到的 code 补;尤其 `2 UNKNOWN`(GoEdge 业务异常常用) |
 | 8 | **proto 字段缺失** | model_user / model_user_feature / model_node_value 等若上游升级删字段 | sync 时 docs/18 §3 checklist 必查 |
 
-**实测最小步骤**(给未来在 Linux/WSL2 上跑):
-1. `docker compose -f deploy/docker-compose.dev.yml --env-file deploy/.env up -d mysql redis edgeapi`
-2. 等 edgeapi 自动 setup,`docker compose exec edgeapi cat /app/configs/.admin-token.json` 取 admin token
-3. 把 adminNodeId/Secret 填进 `services/bff-edge/.env`,设 `EDGE_API_MODE=grpc`
-4. 宿主跑 `npm run start:dev -w @aegis/bff-edge`
-5. `curl -X POST http://127.0.0.1:4002/internal/edge/users -H 'X-Aegis-Internal-Token: ...' -H 'Content-Type: application/json' -d '{"tenantId":1,"username":"test-001"}'`
-6. 期待 200 + `{edgeUserId: <数字>}`;失败按 §9 风险表逐项排查
+**实测最小步骤**:已迁移到独立 runbook → [[docs/20-phase3-step2-linux-runbook.md]]
 
 ---
 
-## 10. 关联文档
+## 10. Phase 3 Step 3 落地清单(2026-05-24)
+
+### Schema 新增 PendingEdgeProvision 表
+
+```
+PendingEdgeProvision
+  tenantId    @unique        ← 关联 Tenant 1:1
+  status      pending | retrying | done | failed
+  attempts    int            ← 已尝试次数
+  maxAttempts default 8      ← 超过即 status=failed(运营介入)
+  lastError   String?        ← 上次失败原因(bff-edge code/message)
+  lastErrorAt DateTime?
+  nextTryAt   DateTime       ← cron 扫描条件
+  resolvedAt  DateTime?      ← done/failed 终态时间戳
+  @@index([status, nextTryAt])
+```
+
+Tenant.edgeUserId 真正写入只在 status=done 那次 transaction,二者强一致。
+
+### EdgeProvisionService 扩展
+
+| 方法 | 用途 |
+| --- | --- |
+| `scheduleProvision(tenantId)` | register 异步入口;upsert pending 记录 + 立即试一次 |
+| `retryPending(batchSize=20)` | cron 调;批量处理 due 的 pending/retrying 记录 |
+| `attemptOne(tenantId)`(私有) | 单次尝试,返回 outcome ∈ ok/transient-fail/permanent-fail |
+| `manualRetry(tenantId)` | admin 触发;重置 status=pending 并立即试 |
+| `getStatus(tenantId)` | 状态查询(给前端/admin) |
+| `provisionNow(tenantId)` | backfill 兼容用,同步阻塞直到完成 |
+
+**错误分类**(`TRANSIENT_CODES`):
+- 瞬时(退避重试):`EDGE_API_NOT_READY` / `EDGE_API_UNREACHABLE` / `BFF_EDGE_UNREACHABLE` / `EDGE_API_ERROR`
+- 永久(立 failed):`EDGE_API_AUTH_FAILED` / `EDGE_USER_CONFLICT` / `BFF_EDGE_BAD_RESPONSE`
+- 退避:指数 `2^attempts` 秒,封顶 600s;超 maxAttempts → status=failed
+
+### Cron
+
+`EdgeProvisionCron` 用 `@nestjs/schedule` 每 30s 跑一次 `retryPending(20)`。
+- 单实例 reentry 保护:`this.running` flag
+- 可关:`EDGE_PROVISION_CRON=off`(dev 静默用)
+- Multi-instance 不防重(Phase 4+ 加 advisory lock 或 BullMQ)
+
+### REST endpoints
+
+| 路径 | 守 | 用途 |
+| --- | --- | --- |
+| `GET /api/v1/saas/edge-provision/me` | JwtAuthGuard | 查自己 Tenant 状态(前端可轮询) |
+| `GET /api/v1/saas/admin/edge-provision?status=failed` | Jwt + Roles | 运营 dashboard,可按 status 过滤 |
+| `GET /api/v1/saas/admin/edge-provision/:tenantId` | Jwt + Roles | 查指定 Tenant 详细状态 |
+| `POST /api/v1/saas/admin/edge-provision/:tenantId/retry` | Jwt + Roles | 手动 retry(失败后运营介入) |
+| `POST /internal/edge-provision/process-pending` | InternalTokenGuard | 外部 cron / scheduler 触发(可叠加 saas-svc 自带 cron) |
+
+### AuthService.register 接入
+
+```ts
+// register 末尾:
+setImmediate(() => {
+  this.edgeProvision.scheduleProvision(tenant.id).catch(...);
+});
+return this.sign({...});  // 立刻返回,不阻塞
+```
+
+- **完全不阻塞 register**:setImmediate + 内部 catch,任何异常都不影响 access_token
+- **前端拿到 JWT 后**:轮询 `/edge-provision/me` 直到 status=done(或失败时显示客服联系)
+
+### backfill 优化
+
+新增 `--queue` flag:
+- 不带 `--queue`(默认 sync):脚本直接调 bff-edge,串行,失败立刻报
+- 带 `--queue`:写 PendingEdgeProvision 表后秒退出,交给 saas-svc cron 异步处理
+- 适合大批量 backfill 或 saas-svc 已部署的场景
+
+### 调用关系图
+
+```
+浏览器 POST /auth/register
+   └─► AuthService.register
+         ├─ Tenant + User 入 PG
+         ├─ setImmediate(scheduleProvision(tenantId))
+         │     └─► PendingEdgeProvision upsert(status=pending)
+         │     └─► attemptOne(tenantId) ─► POST bff-edge/internal/edge/users
+         │           ├─ 200 → Tx{ Tenant.edgeUserId, PendingEdgeProvision.status=done }
+         │           ├─ 瞬时失败 → status=retrying, nextTryAt=now+2^N sec
+         │           └─ 永久失败 → status=failed
+         └─ return JWT(edgeUserId=null) ← 立刻返回
+
+后台
+   EdgeProvisionCron @Cron(30s)
+     └─► retryPending(20) ─► attemptOne(每条 due)…
+
+运营/前端
+   GET /edge-provision/me           查我的 Tenant 状态
+   GET /admin/edge-provision        看 dashboard
+   POST /admin/edge-provision/:id/retry  手动重试
+```
+
+---
+
+## 11. 关联文档
 
 - [[docs/15-goedge-secondary-development-plan.md]] §9 Phase 3 范围定义
 - [[docs/17-saas-svc-接口规范.md]] §1.2 bff-edge 职责边界、§4 内部接口契约
