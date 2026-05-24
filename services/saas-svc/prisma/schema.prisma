@@ -158,18 +158,60 @@ model User {
   updatedAt    DateTime  @updatedAt
 }
 
-// 全局封禁(平台管理员手动:违规域名 / 恶意 IP)
-// D2 决策:留 saas-svc;Phase 3 由 bff-edge 同步到 GoEdge ip_list
+// Phase 3 Step 7 — 全局封禁中心(saas-svc 权威源)
+//
+// type 维度:
+//   ip     单 IP                  → 同步到 GoEdge IPItem(value 直传)
+//   cidr   IP 段(192.168.0.0/16)  → 同步到 GoEdge IPItem(value 直传,GoEdge 自动解析 CIDR)
+//   domain 域名维度                → **不同步 IPList**,Phase 4+ 通过 GoEdge updateServerIsOn 关停
+//   tenant 整个租户                → **不同步 IPList**,Phase 4+ 通过 UserService.disable 关停
+//
+// 同步状态机(syncStatus):
+//   pending  待同步(刚创建)
+//   synced   同步成功(edgeBlockId/edgeIpListId 已写)
+//   failed   同步失败(看 syncError);可走 admin retry
+//   skipped  type=domain/tenant 不需要 GoEdge 同步,直接 skipped
+//
+// 封禁生命周期(status):
+//   active   生效中
+//   released 管理员手动释放(releasedBy/releasedAt 写)
+//   expired  到达 expiresAt(由定时任务或 list 接口动态判定)
 model GlobalBlock {
-  id        Int       @id @default(autoincrement())
-  type      String    // ip | domain
-  value     String
-  reason    String?
-  createdBy Int?
-  expiresAt DateTime?
-  createdAt DateTime  @default(now())
+  id              Int       @id @default(autoincrement())
 
-  @@unique([type, value])
+  type            String    // ip | cidr | domain | tenant
+  value           String    // 单 IP / CIDR / 域名 / tenantId 字符串
+
+  // 关联(可选,用于审计):该封禁源自哪个租户/域名/IP 事件
+  tenantId        Int?      // type=tenant 时存被封禁租户;其他 type 时存触发租户
+  domainId        Int?      // type=domain 时存被封禁 SaasDomain.id;其他类型时存触发域名
+
+  reason          String?
+  isPermanent     Boolean   @default(false)   // permanent 时 expiresAt 应为 null
+  expiresAt       DateTime?
+
+  status          String    @default("active") // active | released | expired
+
+  // GoEdge 同步(仅 type=ip|cidr 才填)
+  edgeBlockId     Int?      // GoEdge IPItem.id
+  edgeIpListId    Int?      // GoEdge IPList.id(平台共享列表,从 env EDGE_GLOBAL_BLOCK_LIST_ID 注入)
+  syncStatus      String    @default("pending") // pending | synced | failed | skipped
+  syncError       String?
+  syncedAt        DateTime?
+
+  createdBy       Int?      // saas-svc User.id(管理员)
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  releasedBy      Int?
+  releasedAt      DateTime?
+  releaseReason   String?
+
+  @@index([status, type])
+  @@index([tenantId])
+  @@index([domainId])
+  @@index([value])
+  @@index([syncStatus])
 }
 
 // ========================================================================

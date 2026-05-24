@@ -6,8 +6,8 @@ import { loadProto } from "./proto-loader";
 import { GrpcUsersService } from "./services/users";
 import { GrpcDomainsService } from "./services/domains";
 import { GrpcSslService } from "./services/ssl";
+import { GrpcIpListsService } from "./services/ip-lists";
 import { PlaceholderNodesService } from "../services/nodes";
-import { PlaceholderIpListsService } from "../services/ip-lists";
 
 /**
  * GrpcEdgeApiClient — 真实接 GoEdge EdgeAPI gRPC 的 client。
@@ -15,6 +15,8 @@ import { PlaceholderIpListsService } from "../services/ip-lists";
  * Phase 3 Step 2: users.create
  * Phase 3 Step 4: domains 全套
  * Phase 3 Step 6: ssl(requestAcmeCert/findCertById/listCertsByUser/removeCert)
+ * Phase 3 Step 6.5: domains.bindCert(createSSLPolicy + updateServerHTTPS)
+ * Phase 3 Step 7: ipLists(addToBlocklist/removeFromBlocklist/listBlocklistItems/createList)
  */
 export class GrpcEdgeApiClient implements EdgeApiClient {
   readonly mode = "grpc" as const;
@@ -22,10 +24,10 @@ export class GrpcEdgeApiClient implements EdgeApiClient {
   readonly users: GrpcUsersService;
   readonly domains: GrpcDomainsService;
   readonly ssl: GrpcSslService;
+  readonly ipLists: GrpcIpListsService;
 
   // 未实现的继续走 Placeholder(throw NotImplementedError)
   readonly nodes = new PlaceholderNodesService();
-  readonly ipLists = new PlaceholderIpListsService();
 
   private stubs: any[] = [];
 
@@ -57,6 +59,13 @@ export class GrpcEdgeApiClient implements EdgeApiClient {
     const certStub = new certProto.pb.SSLCertService(config.addr, creds);
     this.ssl = new GrpcSslService(acmeStub, certStub, () => this.buildMetadata());
     this.stubs.push(acmeStub, certStub);
+
+    const ipListProto = loadProto("service_ip_list.proto") as any;
+    const ipListStub = new ipListProto.pb.IPListService(config.addr, creds);
+    const ipItemProto = loadProto("service_ip_item.proto") as any;
+    const ipItemStub = new ipItemProto.pb.IPItemService(config.addr, creds);
+    this.ipLists = new GrpcIpListsService(ipListStub, ipItemStub, () => this.buildMetadata());
+    this.stubs.push(ipListStub, ipItemStub);
   }
 
   private buildMetadata(): grpc.Metadata {

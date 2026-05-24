@@ -13,6 +13,7 @@ import { KycModule } from "./modules/kyc/kyc.module";
 import { InternalModule } from "./modules/internal/internal.module";
 import { EdgeProvisionModule } from "./modules/edge-provision/edge-provision.module";
 import { DomainsModule } from "./modules/domains/domains.module";
+import { GlobalBlocksModule } from "./modules/globalblocks/globalblocks.module";
 
 @Module({
   imports: [
@@ -33,6 +34,7 @@ import { DomainsModule } from "./modules/domains/domains.module";
     InternalModule,
     EdgeProvisionModule,
     DomainsModule,
+    GlobalBlocksModule,
   ],
   controllers: [HealthController],
 })

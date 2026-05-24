@@ -29,6 +29,8 @@ ENTRY_PROTOS=(
     "service_acme_task.proto"  # Phase 3 Step 6 — ACME 自动证书签发
     "service_ssl_cert.proto"   # Phase 3 Step 6 — SSL 证书查询/删除
     "service_ssl_policy.proto" # Phase 3 Step 6.5 — SSL 策略(证书绑 server)
+    "service_ip_list.proto"    # Phase 3 Step 7 — 全局封禁(IPList 管理)
+    "service_ip_item.proto"    # Phase 3 Step 7 — 全局封禁(IPItem 增删)
 )
 
 # 先清空目标(避免上次同步后清单变小残留)
