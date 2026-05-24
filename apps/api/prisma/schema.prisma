@@ -1,0 +1,256 @@
+// AegisCDN 控制面数据模型(阶段③核心子集,完整版见 docs/02)
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Tenant {
+  id        Int      @id @default(autoincrement())
+  name      String
+  status    String   @default("active") // active | suspended
+  kycStatus String   @default("none")   // none | pending | approved | rejected
+  kycInfo   Json?    // 企业资料:营业执照号/法人/联系人/行业等
+  users     User[]
+  domains   Domain[]
+  subscription Subscription?
+  orders    Order[]
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+// 全局封禁(平台管理员手动:违规域名 / 恶意 IP)
+model GlobalBlock {
+  id        Int       @id @default(autoincrement())
+  type      String    // ip | domain
+  value     String
+  reason    String?
+  createdBy Int?
+  expiresAt DateTime?
+  createdAt DateTime  @default(now())
+
+  @@unique([type, value])
+}
+
+// 套餐(平台级)。金额用整数元,避免 Decimal/BigInt 序列化摩擦。
+model Plan {
+  id             Int      @id @default(autoincrement())
+  code           String   @unique // starter | business | enterprise
+  name           String
+  tier           Int
+  priceMonthly   Int      // 元/月
+  priceYearly    Int      // 元/年
+  protectionGbps Int      @default(0) // 防护容量承诺(G);0=定制
+  trafficGb      Int      @default(0) // 月流量额度 GB;0=不限/定制
+  domainLimit    Int      @default(1)
+  features       Json     @default("{}") // {cc,waf,geo,bot,dedicated}
+  isActive       Boolean  @default(true)
+  isCustom       Boolean  @default(false)
+  subscriptions  Subscription[]
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+}
+
+// 租户当前订阅(简化:每租户一份)
+model Subscription {
+  id                 Int      @id @default(autoincrement())
+  tenantId           Int      @unique
+  tenant             Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  planId             Int
+  plan               Plan     @relation(fields: [planId], references: [id])
+  status             String   @default("trialing") // trialing|active|past_due|canceled|expired
+  cycle              String   @default("monthly")  // monthly|yearly
+  currentPeriodStart DateTime @default(now())
+  currentPeriodEnd   DateTime
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+}
+
+model Order {
+  id        Int       @id @default(autoincrement())
+  orderNo   String    @unique
+  tenantId  Int
+  tenant    Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  type      String    // new | renew | upgrade
+  planId    Int?
+  cycle     String?
+  amount    Int        // 应付金额(元)
+  status    String     @default("pending") // pending | paid | canceled
+  method    String?    // mock | wallet | stripe
+  createdAt DateTime   @default(now())
+  paidAt    DateTime?
+}
+
+model User {
+  id           Int       @id @default(autoincrement())
+  tenantId     Int?
+  tenant       Tenant?   @relation(fields: [tenantId], references: [id])
+  email        String    @unique
+  passwordHash String
+  name         String?
+  role         String    @default("user") // user | operator | admin
+  isActive     Boolean   @default(true)
+  lastLoginAt  DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+}
+
+model Domain {
+  id           Int      @id @default(autoincrement())
+  tenantId     Int
+  tenant       Tenant   @relation(fields: [tenantId], references: [id])
+  name         String   @unique
+  cname        String
+  verifyToken  String
+  status       String   @default("pending")  // pending | verifying | active | paused | blocked
+  reviewStatus String   @default("pending")  // pending | approved | rejected
+  protocol     String   @default("https")
+  forceHttps   Boolean  @default(true)
+  // 决策阈值(下发到边缘)
+  challengeScore   Int  @default(50)
+  blockScore       Int  @default(80)
+  botChallengeScore Int @default(60)
+  configVersion    Int  @default(0)
+
+  origins   Origin[]
+  ccPolicy  CcPolicy?
+  wafPolicy WafPolicy?
+  wafRules  WafRule[]
+  aclRules  AclRule[]
+  rateRules RateRule[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Origin {
+  id        Int     @id @default(autoincrement())
+  domainId  Int
+  domain    Domain  @relation(fields: [domainId], references: [id], onDelete: Cascade)
+  address   String
+  port      Int     @default(80)
+  scheme    String  @default("http")
+  weight    Int     @default(100)
+  role      String  @default("primary") // primary | backup
+}
+
+model RateRule {
+  id       Int    @id @default(autoincrement())
+  domainId Int
+  domain   Domain @relation(fields: [domainId], references: [id], onDelete: Cascade)
+  dim      String // ip | uri | cookie | session | ua | asn | country
+  window   Int    // 秒
+  limit    Int
+  algo     String @default("sliding") // sliding | token | leaky
+}
+
+model CcPolicy {
+  domainId   Int     @id
+  domain     Domain  @relation(fields: [domainId], references: [id], onDelete: Cascade)
+  enabled    Boolean @default(true)
+  mode       String  @default("normal") // off | normal | attack | strict
+  action     String  @default("challenge")
+  updatedAt  DateTime @updatedAt
+}
+
+model WafPolicy {
+  domainId  Int     @id
+  domain    Domain  @relation(fields: [domainId], references: [id], onDelete: Cascade)
+  enabled   Boolean @default(true)
+  mode      String  @default("block") // off | observe | block
+  rulesets  String  @default("sqli,xss,rce,traversal,webshell") // 逗号分隔
+  botProtection Boolean @default(true)
+  updatedAt DateTime @updatedAt
+}
+
+model WafRule {
+  id        Int     @id @default(autoincrement())
+  domainId  Int
+  domain    Domain  @relation(fields: [domainId], references: [id], onDelete: Cascade)
+  ruleset   String  @default("custom")
+  target    String  // uri | args | body | ua | cookie | referer
+  op        String  // regex | contains
+  pattern   String
+  action    String  // log | challenge | block
+  severity  String  @default("medium")
+  enabled   Boolean @default(true)
+}
+
+model AclRule {
+  id        Int     @id @default(autoincrement())
+  domainId  Int
+  domain    Domain  @relation(fields: [domainId], references: [id], onDelete: Cascade)
+  category  String  // ip | geo | ua | referer
+  listType  String  // allow | deny
+  value     String
+  enabled   Boolean @default(true)
+}
+
+// ========== 支付系统(Payment Gateway Adapter Architecture)==========
+// 所有支付参数后台可配置,勿写死;后期填商户信息即可启用对应网关。
+model PaymentGateway {
+  id          Int      @id @default(autoincrement())
+  code        String   @unique // mock | alipay | wechat | qqpay | stripe | paypal | crypto
+  name        String
+  enabled     Boolean  @default(false)
+  sandbox     Boolean  @default(true)
+  config      Json     @default("{}")  // merchantId/appId/apiKey/secret/publicKey... 后台填
+  feeBps      Int      @default(0)      // 手续费,基点(100=1%)
+  exchangeRate Float   @default(1)      // 相对结算币种汇率
+  icon        String?
+  sortOrder   Int      @default(100)
+  currencies  String   @default("CNY") // 支持币种,逗号分隔
+  ipWhitelist String?                  // 回调 IP 白名单(逗号分隔;空=不限)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+model Payment {
+  id            Int       @id @default(autoincrement())
+  paymentNo     String    @unique
+  tenantId      Int
+  orderId       Int?                     // 关联 billing Order(订阅订单)
+  gatewayCode   String
+  subject       String
+  amount        Int                      // 金额(元)
+  fee           Int       @default(0)
+  currency      String    @default("CNY")
+  status        String    @default("pending") // pending|paid|failed|expired|refunded
+  providerTxnId String?                  // 第三方交易号
+  clientIp      String?
+  payUrl        String?
+  expiresAt     DateTime?
+  paidAt        DateTime?
+  raw           Json?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  @@index([tenantId])
+  @@index([status])
+}
+
+model PaymentLog {
+  id        Int      @id @default(autoincrement())
+  paymentNo String
+  event     String   // create|callback|query|refund|simulate|error
+  ip        String?
+  payload   Json?
+  result    String?
+  createdAt DateTime @default(now())
+
+  @@index([paymentNo])
+}
+
+model Refund {
+  id               Int      @id @default(autoincrement())
+  refundNo         String   @unique
+  paymentNo        String
+  amount           Int
+  reason           String?
+  status           String   @default("pending") // pending|done|failed
+  providerRefundId String?
+  createdAt        DateTime @default(now())
+}

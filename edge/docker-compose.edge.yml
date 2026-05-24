@@ -1,0 +1,67 @@
+# AegisCDN 边缘安全引擎 + 日志管道 —— 一键起本地验证环境
+# 用法(在有 Docker 的 Linux/Mac/WSL2 上):
+#   cd edge && docker compose -f docker-compose.edge.yml up -d --build
+#   然后跑 ./test.sh 制造流量,打开后台可视化看实时攻击数据。
+
+services:
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    networks: [aegis]
+
+  demo-origin:
+    image: traefik/whoami:latest      # 简单回显源站,代表客户网站
+    networks: [aegis]
+
+  openresty:
+    build: ./openresty                 # GeoIP 增强镜像(libmaxminddb + lua-resty-maxminddb)
+    depends_on: [redis, demo-origin]
+    ports:
+      - "8080:80"                      # 浏览器/压测访问 http://localhost:8080
+    environment:
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      AEGIS_SECRET: "local-dev-secret-change-me-please-32+"
+      DNS_RESOLVER: "8.8.8.8"
+      GEOIP_COUNTRY_DB: /etc/openresty/geoip/GeoLite2-Country.mmdb
+    volumes:
+      - ./openresty/nginx.conf:/usr/local/openresty/nginx/conf/nginx.conf:ro
+      - ./openresty/conf.d:/etc/openresty/conf.d:ro
+      - ./openresty/lua:/etc/openresty/lua:ro
+      - ./openresty/geoip:/etc/openresty/geoip:ro
+      - oplogs:/usr/local/openresty/nginx/logs    # 与 agent 共享日志
+    networks: [aegis]
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:24-alpine
+    ports:
+      - "8123:8123"                    # HTTP 接口(agent 写入 / 后台查询)
+    volumes:
+      - ./clickhouse/schema.sql:/docker-entrypoint-initdb.d/schema.sql:ro
+    ulimits:
+      nofile: { soft: 262144, hard: 262144 }
+    networks: [aegis]
+
+  # 日志管道:tail OpenResty JSON 日志 → 批量写 ClickHouse
+  edge-agent:
+    build: ./agent
+    depends_on: [openresty, clickhouse]
+    environment:
+      LOG_PATH: /var/log/openresty/access.json.log
+      OFFSET_FILE: /var/lib/aegis-agent/offset
+      CLICKHOUSE_URL: http://clickhouse:8123
+      CLICKHOUSE_DB: aegis
+      CLICKHOUSE_TABLE: request_log
+      BATCH_SIZE: "200"
+      FLUSH_INTERVAL_MS: "2000"
+    volumes:
+      - oplogs:/var/log/openresty:ro              # 只读挂载 OpenResty 日志
+      - agentstate:/var/lib/aegis-agent           # offset 断点持久化
+    networks: [aegis]
+
+volumes:
+  oplogs: {}
+  agentstate: {}
+
+networks:
+  aegis: {}

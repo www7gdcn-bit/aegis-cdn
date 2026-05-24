@@ -1,0 +1,74 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --container: 1180px;
+}
+
+html {
+  scroll-behavior: smooth;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+body {
+  background: #ffffff;
+  color: #0b0b0f;
+  font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+}
+
+@layer components {
+  .container-x {
+    @apply mx-auto w-full max-w-container px-6;
+  }
+
+  /* 玻璃拟态卡片 */
+  .glass {
+    @apply rounded-3xl border border-white/10 bg-white/5 backdrop-blur-xl;
+  }
+  .glass-light {
+    @apply rounded-3xl border border-black/5 bg-white/70 backdrop-blur-xl shadow-[0_8px_40px_-12px_rgba(0,0,0,0.12)];
+  }
+
+  /* 渐变文字 */
+  .text-gradient {
+    @apply bg-clip-text text-transparent;
+    background-image: linear-gradient(180deg, #ffffff 0%, #9aa7c7 100%);
+  }
+  .text-gradient-brand {
+    @apply bg-clip-text text-transparent;
+    background-image: linear-gradient(120deg, #0a84ff 0%, #30d158 100%);
+  }
+
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 rounded-full px-6 py-3 text-[15px] font-medium transition-all duration-300;
+  }
+  .btn-primary {
+    @apply btn bg-brand text-white hover:bg-brand-600 hover:shadow-[0_8px_30px_-6px_rgba(10,132,255,0.6)];
+  }
+  .btn-ghost-dark {
+    @apply btn border border-white/20 text-white/90 hover:bg-white/10;
+  }
+  .btn-ghost-light {
+    @apply btn border border-black/10 text-ink hover:bg-black/[0.04];
+  }
+
+  .eyebrow {
+    @apply text-sm font-semibold uppercase tracking-[0.18em] text-brand;
+  }
+}
+
+/* 隐藏滚动条美化(节点地图等横向区域) */
+.no-scrollbar::-webkit-scrollbar { display: none; }
+.no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+
+/* 网格背景(Hero) */
+.bg-grid {
+  background-image:
+    linear-gradient(to right, rgba(255,255,255,0.05) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(255,255,255,0.05) 1px, transparent 1px);
+  background-size: 56px 56px;
+  -webkit-mask-image: radial-gradient(ellipse 80% 60% at 50% 0%, #000 40%, transparent 75%);
+          mask-image: radial-gradient(ellipse 80% 60% at 50% 0%, #000 40%, transparent 75%);
+}

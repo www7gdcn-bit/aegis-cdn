@@ -1,0 +1,19 @@
+{
+  "name": "aegis-cdn",
+  "private": true,
+  "version": "0.1.0",
+  "description": "AegisCDN — 商用级高防 CDN / DDoS 防护 SaaS 平台",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "npm run dev -w @aegis/web",
+    "dev:web": "npm run dev -w @aegis/web",
+    "build:web": "npm run build -w @aegis/web",
+    "start:web": "npm run start -w @aegis/web"
+  },
+  "engines": {
+    "node": ">=18.18"
+  }
+}

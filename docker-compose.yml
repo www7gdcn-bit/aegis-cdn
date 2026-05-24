@@ -1,0 +1,96 @@
+# AegisCDN 全栈本地联调 —— 后端全链路一条命令起。
+#   docker compose up -d --build
+# 前端单独跑(浏览器侧需访问宿主端口):  npm run dev:web   → http://localhost:3000
+#
+# 关键:控制面(api)与边缘(openresty)共用同一 Redis;edge-agent 与 api 共用同一 ClickHouse,
+# 这样"控制台配置 → 下发 Redis → 边缘热加载"、"边缘日志 → CK → 后台可视化"两条链路才真正打通。
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: aegis
+      POSTGRES_PASSWORD: aegis_pass
+      POSTGRES_DB: aegis
+    volumes: [pgdata:/var/lib/postgresql/data]
+    networks: [aegis]
+
+  redis: # 控制面与边缘共用
+    image: redis:7-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    ports: ["6379:6379"]
+    networks: [aegis]
+
+  clickhouse: # edge-agent 写入,api 读取
+    image: clickhouse/clickhouse-server:24-alpine
+    ports: ["8123:8123"]
+    volumes:
+      - ./edge/clickhouse/schema.sql:/docker-entrypoint-initdb.d/schema.sql:ro
+    ulimits:
+      nofile: { soft: 262144, hard: 262144 }
+    networks: [aegis]
+
+  demo-origin: # 代表客户源站
+    image: traefik/whoami:latest
+    networks: [aegis]
+
+  openresty: # 边缘安全引擎(数据面),GeoIP 增强镜像
+    build: ./edge/openresty
+    depends_on: [redis, demo-origin]
+    ports: ["8080:80"]
+    environment:
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      AEGIS_SECRET: "local-dev-secret-change-me-please-32+"
+      DNS_RESOLVER: "8.8.8.8"
+      GEOIP_COUNTRY_DB: /etc/openresty/geoip/GeoLite2-Country.mmdb
+    volumes:
+      - ./edge/openresty/nginx.conf:/usr/local/openresty/nginx/conf/nginx.conf:ro
+      - ./edge/openresty/conf.d:/etc/openresty/conf.d:ro
+      - ./edge/openresty/lua:/etc/openresty/lua:ro
+      - ./edge/openresty/geoip:/etc/openresty/geoip:ro
+      - oplogs:/usr/local/openresty/nginx/logs
+    networks: [aegis]
+
+  edge-agent: # 日志管道:openresty 日志 → ClickHouse
+    build: ./edge/agent
+    depends_on: [openresty, clickhouse]
+    environment:
+      LOG_PATH: /var/log/openresty/access.json.log
+      OFFSET_FILE: /var/lib/aegis-agent/offset
+      CLICKHOUSE_URL: http://clickhouse:8123
+      CLICKHOUSE_DB: aegis
+      CLICKHOUSE_TABLE: request_log
+      BATCH_SIZE: "100"
+      FLUSH_INTERVAL_MS: "2000"
+    volumes:
+      - oplogs:/var/log/openresty:ro
+      - agentstate:/var/lib/aegis-agent
+    networks: [aegis]
+
+  api: # 控制面(NestJS)
+    build:
+      context: ./apps/api
+      dockerfile: Dockerfile
+    depends_on: [postgres, redis, clickhouse]
+    # 开发用 db push 直接建表(无需迁移文件);生产改回 migrate deploy
+    command: ["sh", "-c", "npx prisma db push --skip-generate && node dist/main.js"]
+    environment:
+      DATABASE_URL: postgresql://aegis:aegis_pass@postgres:5432/aegis?schema=public
+      REDIS_URL: redis://redis:6379
+      CLICKHOUSE_URL: http://clickhouse:8123
+      CLICKHOUSE_DB: aegis
+      JWT_SECRET: local_dev_jwt_secret_at_least_32_chars_xxxx
+      CNAME_SUFFIX: aegis-cdn.net
+      CORS_ORIGINS: http://localhost:3000
+      PORT: "4000"
+    ports: ["4000:4000"]
+    networks: [aegis]
+
+volumes:
+  pgdata: {}
+  oplogs: {}
+  agentstate: {}
+
+networks:
+  aegis: {}
