@@ -10,6 +10,7 @@ import { SubscriptionsModule } from "./modules/subscriptions/subscriptions.modul
 import { OrdersModule } from "./modules/orders/orders.module";
 import { PaymentModule } from "./modules/payment/payment.module";
 import { KycModule } from "./modules/kyc/kyc.module";
+import { InternalModule } from "./modules/internal/internal.module";
 
 @Module({
   imports: [
@@ -27,6 +28,7 @@ import { KycModule } from "./modules/kyc/kyc.module";
     OrdersModule,
     PaymentModule,
     KycModule,
+    InternalModule,
   ],
   controllers: [HealthController],
 })
