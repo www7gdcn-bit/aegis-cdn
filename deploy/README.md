@@ -205,11 +205,11 @@ docker compose -f deploy/docker-compose.dev.yml down -v
 
 | Phase | 服务 | 接入点 |
 | --- | --- | --- |
-| **Phase 2** | `services/saas-svc/`(NestJS) | 连 **aegis-postgres**(5432) + **aegis-redis**(6379, db=1) |
+| **Phase 2(已完成)** | `services/saas-svc/`(NestJS) | 连 **aegis-postgres**(5432, db=aegis_saas) + **aegis-redis**(6379, db=1)。本 compose 加了占位 service 在 profile=saas;Phase 2 阶段建议宿主 `npm run start:dev -w @aegis/saas-svc`,容器化待 Phase 5 写 Dockerfile |
 | **Phase 3** | `services/bff-edge/`(NestJS) | 连 **aegis-edgeapi gRPC**(8003),持有 admin token,提供 REST 给前端 |
 | **Phase 4** | `apps/web`(Next.js) | 前端 fetch `bff-edge` 与 `saas-svc`;不直接连 EdgeAPI |
-| **Phase 5** | overlays(aegis tag) | 重建镜像加 `--build-arg BUILD_TAGS=aegis`;`docker-compose.dev.yml` 已留参数槽位 |
-| **Phase 8** | `services/analytics-svc/` + ClickHouse | 新增 `clickhouse` 容器进本 compose,EdgeNode `HTTPAccessLogQueue` 推日志 |
+| **Phase 5** | overlays(aegis tag) + saas-svc Dockerfile | 重建镜像加 `--build-arg BUILD_TAGS=aegis`;`docker-compose.dev.yml` 已留参数槽位;saas-svc 也容器化 |
+| **Phase 8** | `services/analytics-svc/` + ClickHouse | 新增 `clickhouse` 容器进本 compose,EdgeNode `HTTPAccessLogQueue` 推日志;saas-svc 现有 6 个 `/internal/log/*` 占位端点届时整组搬过去 |
 
 ---
 

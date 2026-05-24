@@ -170,7 +170,7 @@ services:
       - "${EDGE_NODE_HTTPS_PORT:-8443}:443"
 
   # ──────────────────────────────────────────────────────────────
-  # 5. PostgreSQL 17 — 占位给 services/saas-svc(Phase 2 才真正用)
+  # 5. PostgreSQL 17 — services/saas-svc 业务库(Phase 2)
   # ──────────────────────────────────────────────────────────────
   postgres:
     image: postgres:17-alpine
@@ -191,3 +191,37 @@ services:
       timeout: 5s
       retries: 5
       start_period: 15s
+
+  # ──────────────────────────────────────────────────────────────
+  # 6. services/saas-svc(Phase 2 占位)
+  #
+  #    用 profile "saas" 隔离 — 默认 `docker compose up -d` 不启动;
+  #    Phase 2 阶段建议在宿主跑 `npm run start:dev -w @aegis/saas-svc`(贴近开发态);
+  #    Phase 5 起开启此 service 容器化(BUILD 入口 Phase 5 前先写 Dockerfile)。
+  #
+  #    端口 4001(host 跑时已用);此处也映射避免冲突。
+  # ──────────────────────────────────────────────────────────────
+  saas-svc:
+    profiles: ["saas"]   # 默认不启;`docker compose --profile saas up -d` 才启动
+    container_name: aegis-saas-svc
+    restart: unless-stopped
+    networks: [aegis-dev]
+    # Dockerfile 留到 Phase 5(与 overlays 一并落)。当前先用 placeholder 镜像:
+    image: node:20-alpine
+    working_dir: /app
+    command: ["sh", "-c", "echo 'saas-svc 容器化待 Phase 5 落 Dockerfile;Phase 2 在宿主 npm run start:dev -w @aegis/saas-svc' && sleep infinity"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      DATABASE_URL:           "postgresql://${POSTGRES_USER:-aegis}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-aegis_saas}?schema=public"
+      REDIS_URL:              "redis://default:${REDIS_PASSWORD}@redis:6379/1"
+      JWT_SECRET:             ${AEGIS_JWT_SECRET:?AEGIS_JWT_SECRET required}
+      JWT_EXPIRES_IN:         ${AEGIS_JWT_EXPIRES_IN:-7d}
+      AEGIS_INTERNAL_SECRET:  ${AEGIS_INTERNAL_SECRET:?AEGIS_INTERNAL_SECRET required}
+      PORT:                   "4001"
+      NODE_ENV:               ${NODE_ENV:-development}
+    ports:
+      - "127.0.0.1:${SAAS_SVC_PORT:-4001}:4001"
