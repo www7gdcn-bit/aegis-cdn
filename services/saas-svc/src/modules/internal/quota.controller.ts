@@ -1,4 +1,4 @@
-import { Body, Controller, HttpException, Post, UseGuards } from "@nestjs/common";
+import { Body, Controller, Get, HttpException, Param, ParseIntPipe, Post, UseGuards } from "@nestjs/common";
 import { SubscriptionsService } from "../subscriptions/subscriptions.service";
 import { InternalTokenGuard } from "./internal-token.guard";
 import { QuotaCheckDto, QuotaCheckResult } from "./dto";
@@ -9,6 +9,13 @@ import { QuotaCheckDto, QuotaCheckResult } from "./dto";
 @Controller("internal/quota")
 export class InternalQuotaController {
   constructor(private subs: SubscriptionsService) {}
+
+  // 完整快照(features/limit/periodEnd 等),供 apps/api 残留 config-compiler 与
+  // 未来 bff-edge 一次性拿到所有配额信息。
+  @Get("snapshot/:tenantId")
+  snapshot(@Param("tenantId", ParseIntPipe) tenantId: number) {
+    return this.subs.getQuota(tenantId);
+  }
 
   @Post("check")
   async check(@Body() dto: QuotaCheckDto): Promise<QuotaCheckResult> {
