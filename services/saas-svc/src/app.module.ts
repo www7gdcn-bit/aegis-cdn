@@ -3,8 +3,7 @@ import { JwtModule } from "@nestjs/jwt";
 import { PrismaModule } from "./core/prisma/prisma.module";
 import { RedisModule } from "./core/redis/redis.module";
 import { HealthController } from "./core/health.controller";
-
-// Phase 2 Step A 仅落骨架,业务模块在后续 step 注册。
+import { AuthModule } from "./modules/identity/auth.module";
 
 @Module({
   imports: [
@@ -15,6 +14,7 @@ import { HealthController } from "./core/health.controller";
     }),
     PrismaModule,
     RedisModule,
+    AuthModule,
   ],
   controllers: [HealthController],
 })
