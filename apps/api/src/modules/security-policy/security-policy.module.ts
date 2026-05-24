@@ -1,13 +1,12 @@
 import { Module } from "@nestjs/common";
 import { SecurityPolicyService } from "./security-policy.service";
 import { SecurityPolicyController } from "./security-policy.controller";
-import { BillingModule } from "../billing/billing.module";
 import { ProvisioningModule } from "../provisioning/provisioning.module";
 
 // security-policy 模块:CC/WAF/ACL/RateRule CRUD。
-// ConfigCompilerService 由 ProvisioningModule 提供,这里 import 进来用。
+// ConfigCompilerService 由 ProvisioningModule 提供;QuotaClient 来自 @Global() QuotaClientModule。
 @Module({
-  imports: [BillingModule, ProvisioningModule],
+  imports: [ProvisioningModule],
   providers: [SecurityPolicyService],
   controllers: [SecurityPolicyController],
 })

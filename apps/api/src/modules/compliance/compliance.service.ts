@@ -1,9 +1,13 @@
-import { BadRequestException, Injectable, NotFoundException } from "@nestjs/common";
+import { Injectable, NotFoundException } from "@nestjs/common";
 import { PrismaService } from "../../core/prisma/prisma.service";
 import { RedisService } from "../../core/redis/redis.service";
 import { ConfigCompilerService } from "../provisioning/config-compiler.service";
-import { CreateBlockDto, SubmitKycDto } from "./dto";
+import { CreateBlockDto } from "./dto";
 
+// Phase 2 之后本服务只保留:
+//   - 接入审核(reviewDomain)        — 行为依赖 ConfigCompiler 推下发到边缘
+//   - 全局封禁(blocks)               — 行为依赖 Redis(GoEdge db=0) + Domain 表 + 边缘下发
+// KYC 4 个方法已迁到 services/saas-svc/modules/kyc。
 @Injectable()
 export class ComplianceService {
   constructor(
@@ -11,23 +15,6 @@ export class ComplianceService {
     private redis: RedisService,
     private compiler: ConfigCompilerService,
   ) {}
-
-  // ---- 租户侧:KYC ----
-  async submitKyc(tenantId: number, info: SubmitKycDto) {
-    await this.prisma.tenant.update({
-      where: { id: tenantId },
-      data: { kycInfo: info as any, kycStatus: "pending" },
-    });
-    return { kycStatus: "pending" };
-  }
-
-  async myKyc(tenantId: number) {
-    const t = await this.prisma.tenant.findUnique({
-      where: { id: tenantId },
-      select: { kycStatus: true, kycInfo: true },
-    });
-    return t;
-  }
 
   // ---- 管理侧:接入审核 ----
   pendingReviews() {
@@ -48,23 +35,6 @@ export class ComplianceService {
     }
     await this.compiler.compileAndPush(domainId); // 重新下发(approve→enabled, reject→不启用)
     return { id: domainId, action };
-  }
-
-  // ---- 管理侧:KYC 审核 ----
-  pendingKyc() {
-    return this.prisma.tenant.findMany({
-      where: { kycStatus: "pending" },
-      select: { id: true, name: true, kycInfo: true, kycStatus: true, createdAt: true },
-      orderBy: { id: "asc" },
-    });
-  }
-
-  async reviewKyc(tenantId: number, action: "approve" | "reject") {
-    await this.prisma.tenant.update({
-      where: { id: tenantId },
-      data: { kycStatus: action === "approve" ? "approved" : "rejected" },
-    });
-    return { tenantId, action };
   }
 
   // ---- 管理侧:全局封禁 ----

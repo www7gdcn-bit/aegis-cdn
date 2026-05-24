@@ -1,12 +1,12 @@
 import { ConflictException, Injectable, NotFoundException } from "@nestjs/common";
 import { randomBytes } from "crypto";
 import { PrismaService } from "../../core/prisma/prisma.service";
-import { BillingService } from "../billing/billing.service";
+import { QuotaClient } from "../../core/quota-client/quota-client.service";
 import { CreateDomainDto } from "./dto";
 
 @Injectable()
 export class ProvisioningService {
-  constructor(private prisma: PrismaService, private billing: BillingService) {}
+  constructor(private prisma: PrismaService, private quota: QuotaClient) {}
 
   private suffix() {
     return process.env.CNAME_SUFFIX || "aegis-cdn.net";
@@ -30,7 +30,10 @@ export class ProvisioningService {
   }
 
   async create(tenantId: number, dto: CreateDomainDto) {
-    await this.billing.assertCanAddDomain(tenantId); // 套餐域名数配额
+    // 套餐域名数配额 — RPC 调 saas-svc /internal/quota/check;currentDomainCount 本地算
+    const currentCount = await this.prisma.domain.count({ where: { tenantId } });
+    await this.quota.assertCanAddDomain(tenantId, currentCount);
+
     const name = dto.name.trim().toLowerCase();
     if (await this.prisma.domain.findUnique({ where: { name } })) {
       throw new ConflictException("域名已被接入");

@@ -1,6 +1,6 @@
 import { ForbiddenException, Injectable, NotFoundException } from "@nestjs/common";
 import { PrismaService } from "../../core/prisma/prisma.service";
-import { BillingService } from "../billing/billing.service";
+import { QuotaClient } from "../../core/quota-client/quota-client.service";
 import { ConfigCompilerService } from "../provisioning/config-compiler.service";
 import { CreateAclDto, CreateRateRuleDto, CreateWafRuleDto, UpdateCcDto, UpdateWafDto } from "./dto";
 
@@ -9,7 +9,7 @@ export class SecurityPolicyService {
   constructor(
     private prisma: PrismaService,
     private compiler: ConfigCompilerService,
-    private billing: BillingService,
+    private quota: QuotaClient,
   ) {}
 
   private async assertOwned(tenantId: number, domainId: number) {
@@ -25,7 +25,7 @@ export class SecurityPolicyService {
 
   async updateCc(tenantId: number, domainId: number, dto: UpdateCcDto) {
     await this.assertOwned(tenantId, domainId);
-    await this.billing.assertFeature(tenantId, "cc", "CC 防护");
+    await this.quota.assertFeature(tenantId, "cc", "CC 防护");
     await this.prisma.ccPolicy.upsert({
       where: { domainId },
       create: { domainId, ...dto },
@@ -36,7 +36,7 @@ export class SecurityPolicyService {
 
   async updateWaf(tenantId: number, domainId: number, dto: UpdateWafDto) {
     await this.assertOwned(tenantId, domainId);
-    await this.billing.assertFeature(tenantId, "waf", "WAF 防护");
+    await this.quota.assertFeature(tenantId, "waf", "WAF 防护");
     await this.prisma.wafPolicy.upsert({
       where: { domainId },
       create: { domainId, ...dto },
@@ -47,7 +47,7 @@ export class SecurityPolicyService {
 
   async addWafRule(tenantId: number, domainId: number, dto: CreateWafRuleDto) {
     await this.assertOwned(tenantId, domainId);
-    await this.billing.assertFeature(tenantId, "waf", "WAF 防护");
+    await this.quota.assertFeature(tenantId, "waf", "WAF 防护");
     await this.prisma.wafRule.create({ data: { domainId, ...dto } });
     return this.push(domainId);
   }

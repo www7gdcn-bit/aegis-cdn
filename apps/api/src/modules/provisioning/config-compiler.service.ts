@@ -1,13 +1,13 @@
 import { Injectable } from "@nestjs/common";
 import { PrismaService } from "../../core/prisma/prisma.service";
 import { RedisService } from "../../core/redis/redis.service";
-import { BillingService } from "../billing/billing.service";
+import { QuotaClient } from "../../core/quota-client/quota-client.service";
 
 // 把某域名的 DB 策略编译成边缘 OpenResty(config.lua)认识的 JSON,并下发到 Redis。
 // 边缘 config.lua 读 aegis:cfg:<domain>;waf.lua 读 aegis:waf:<domain>(自定义规则数组)。
 @Injectable()
 export class ConfigCompilerService {
-  constructor(private prisma: PrismaService, private redis: RedisService, private billing: BillingService) {}
+  constructor(private prisma: PrismaService, private redis: RedisService, private quota: QuotaClient) {}
 
   async compileAndPush(domainId: number) {
     const d = await this.prisma.domain.findUnique({
@@ -17,8 +17,8 @@ export class ConfigCompilerService {
     if (!d) throw new Error("domain not found");
 
     // 套餐功能门控:套餐不含的功能即使 DB 有策略也不下发(后端为准,防绕过)
-    const quota = await this.billing.getQuota(d.tenantId);
-    const feat: any = quota.features || {};
+    // 通过 RPC 调 saas-svc /internal/quota/snapshot/:tenantId
+    const feat: any = await this.quota.getFeatures(d.tenantId);
 
     // 默认限频(域名未配置时)
     const rateRules =
