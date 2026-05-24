@@ -197,11 +197,11 @@ packages/edge-api-sdk/
 
 | Step | 范围 | 状态 |
 | --- | --- | --- |
-| **Step 1** | bff-edge 骨架 + SDK placeholder + 5 个分组 controller 占位 + 文档 | **本步,已完成** |
-| Step 2 | SDK 真接 @grpc/grpc-js + admin metadata + UserService/CreateUser 第一个真实方法 | 待启 |
-| Step 3 | bff-edge.users.create 真实化 + saas-svc.register 异步触发 + Tenant.edgeUserId 实时写 | 待启 |
-| Step 4 | backfill 脚本 + 失败重试/解绑/重绑流程 | 待启 |
-| Step 5 | domains.create 真实化(含 quota 前置) | 待启 |
+| Step 1 | bff-edge 骨架 + SDK placeholder + 5 个分组 controller 占位 + 文档 | 已完成 |
+| **Step 2** | SDK 真接 @grpc/grpc-js + admin metadata + **UserService.create 真实化** + bff-edge `POST /users` + saas-svc EdgeProvisionService(不接 register) + backfill 脚本 | **本步,已完成(未端到端实测)** |
+| Step 3 | saas-svc.register 异步触发 provision + Tenant.edgeUserId 实时写;失败重试/解绑/重绑流程 | 待启 |
+| Step 4 | UsersService 其余 3 个方法(findById/disable/enable);封禁联动 | 待启 |
+| Step 5 | domains.create 真实化(含 quota 前置 + sync-proto.sh 加 service_server.proto) | 待启 |
 | Step 6 | ssl + acme | 待启 |
 | Step 7 | blocks 单向同步链路(saas-svc.addBlock → bff-edge → GoEdge ip_list);
             apps/api 残留 reviewDomain / addBlock 整体下线 | 待启 |
@@ -209,7 +209,65 @@ packages/edge-api-sdk/
 
 ---
 
-## 8. 关联文档
+## 8. Phase 3 Step 2 落地清单(2026-05-24)
+
+### SDK 新增能力
+
+- 依赖:`@grpc/grpc-js` ^1.12 + `@grpc/proto-loader` ^0.7
+- 入库 proto:`packages/edge-api-sdk/proto/`(由 `scripts/sync-proto.sh` 递归 follow imports 同步,Step 2 共 7 个文件 = service_user.proto + 6 依赖)
+- 新增 `src/grpc/auth.ts`:`buildGoEdgeToken(secret, nodeId, type)` — AES-256-CFB(key 32B pad space / iv 16B pad space)+ JSON `{type, timestamp, userId:0}` + base64
+- 新增 `src/grpc/client.ts`:`GrpcEdgeApiClient`,每次 RPC 调用前重新生成 token 注入 metadata `{nodeid, token}`
+- 新增 `src/grpc/services/users.ts`:`GrpcUsersService.create` 真实调用 `pb.UserService/createUser`
+- `createEdgeApiClient(config)` 支持 `mode: "placeholder" | "grpc"`;未指定时按凭证完整性自动选
+
+### bff-edge 真实化
+
+- `POST /internal/edge/users`:接 SDK 真实 createUser
+- 错误码契约(返回 body 含 `code`):
+  - 502 `EDGE_API_NOT_READY`   (SDK placeholder 模式)
+  - 502 `EDGE_API_UNREACHABLE` (grpc UNAVAILABLE/DEADLINE)
+  - 401 `EDGE_API_AUTH_FAILED` (UNAUTHENTICATED/PERMISSION_DENIED)
+  - 409 `EDGE_USER_CONFLICT`   (ALREADY_EXISTS)
+  - 500 `EDGE_API_ERROR`       (其他)
+- `EdgeApiClient` 读 `EDGE_API_MODE` env(优先级:env > 凭证自动判断)
+
+### saas-svc 新增
+
+- `modules/edge-provision/`:`EdgeProvisionService.provisionTenant(tenantId)`
+  - 调 bff-edge `POST /internal/edge/users`
+  - 成功后写 `Tenant.edgeUserId` + `edgeUserSyncedAt`
+  - 失败返结构化 `{ok:false, code, reason}`(不抛异常),调用方决定是否重试
+  - **不接进** register 流程(避免破坏现有注册;Phase 3 Step 3 才接)
+- `scripts/backfill-edge-users.ts`:CLI 工具,默认 dry-run,`--apply` 真跑,可 `--limit N`
+
+---
+
+## 9. 未端到端实测的风险清单(Step 2 必须列清,Step 3 前实测)
+
+> 本机 Windows 无 Docker;EdgeAPI gRPC 未跑过。下列假设需在 Linux/WSL2 环境跑通后才能视为已验证。
+
+| # | 风险 | 触发条件 | 应对 |
+| --- | --- | --- | --- |
+| 1 | **AES-256-CFB segment size 不匹配** | Node `aes-256-cfb` 与 Go `cipher.NewCFBEncrypter` 实际加密对接 | Node 默认是 CFB-128,Go 也是 128;但若实测解密失败,尝试 `aes-256-cfb8` 或自实现 segment-by-segment XOR |
+| 2 | **proto-loader 包名解析** | `userProto.pb.UserService` 路径若上游 proto `package` 字段调整即断 | 实测后将路径常量化 + 加单元测试 |
+| 3 | **GoEdge `password` 为空被拒** | CreateUserRequest 字段 password 当前传空 | 实测若拒,改为 saas-svc 生成强随机 + 不落库(GoEdge 仅用作占位) |
+| 4 | **clusterId=0 行为** | Step 2 传 `nodeClusterId: 0` 期待"默认集群" | 实测若 GoEdge 拒绝,需先 list cluster 选第一个 / 或从 env 注入 `EDGE_DEFAULT_CLUSTER_ID` |
+| 5 | **gRPC TLS** | EdgeAPI 默认非 TLS(`createInsecure`);生产应走 TLS | Phase 3 Step 3+ 加 `config.tls.caPath`,生产部署文档化 |
+| 6 | **bff-edge connection 复用** | 当前 `GrpcEdgeApiClient` 直接 new UserService stub | proto-loader 推荐每个 service 独立 stub;Step 3 起 domains/ssl 加时统一 channel(`new grpc.Client(addr, creds)` + 各 service 复用) |
+| 7 | **错误码映射不全** | grpc.status code 14 种,只映射了 4 种 | 实测后按真实落到的 code 补;尤其 `2 UNKNOWN`(GoEdge 业务异常常用) |
+| 8 | **proto 字段缺失** | model_user / model_user_feature / model_node_value 等若上游升级删字段 | sync 时 docs/18 §3 checklist 必查 |
+
+**实测最小步骤**(给未来在 Linux/WSL2 上跑):
+1. `docker compose -f deploy/docker-compose.dev.yml --env-file deploy/.env up -d mysql redis edgeapi`
+2. 等 edgeapi 自动 setup,`docker compose exec edgeapi cat /app/configs/.admin-token.json` 取 admin token
+3. 把 adminNodeId/Secret 填进 `services/bff-edge/.env`,设 `EDGE_API_MODE=grpc`
+4. 宿主跑 `npm run start:dev -w @aegis/bff-edge`
+5. `curl -X POST http://127.0.0.1:4002/internal/edge/users -H 'X-Aegis-Internal-Token: ...' -H 'Content-Type: application/json' -d '{"tenantId":1,"username":"test-001"}'`
+6. 期待 200 + `{edgeUserId: <数字>}`;失败按 §9 风险表逐项排查
+
+---
+
+## 10. 关联文档
 
 - [[docs/15-goedge-secondary-development-plan.md]] §9 Phase 3 范围定义
 - [[docs/17-saas-svc-接口规范.md]] §1.2 bff-edge 职责边界、§4 内部接口契约

@@ -4,11 +4,20 @@ import { PlaceholderSslService, type SslService } from "./services/ssl";
 import { PlaceholderNodesService, type NodesService } from "./services/nodes";
 import { PlaceholderIpListsService, type IpListsService } from "./services/ip-lists";
 
+export type EdgeApiMode = "placeholder" | "grpc";
+
 export interface EdgeApiClientConfig {
   addr: string;             // host:port 例 "edgeapi:8003"
   adminNodeId: string;      // EdgeAPI setup 返回的 adminNodeId
   adminNodeSecret: string;
-  // Phase 3 Step 2+ 加:
+  /**
+   * 强制选择 client 实现:
+   *   - "placeholder"(默认):所有方法 throw NotImplementedError,无需 admin 凭证
+   *   - "grpc":真接 @grpc/grpc-js;需要 adminNodeId/Secret 与可达的 addr
+   * 不传时,若 adminNodeId+Secret 都给齐自动用 "grpc",否则回落 "placeholder"。
+   */
+  mode?: EdgeApiMode;
+  // Phase 3 Step 3+ 加:
   //   tls?: { caPath: string };
   //   timeoutMs?: number;
   //   reconnect?: boolean;
@@ -16,7 +25,7 @@ export interface EdgeApiClientConfig {
 
 export interface EdgeApiClient {
   readonly config: EdgeApiClientConfig;
-  readonly mode: "placeholder" | "grpc";  // 当前只能是 placeholder
+  readonly mode: EdgeApiMode;
   readonly users: UsersService;
   readonly domains: DomainsService;
   readonly ssl: SslService;
@@ -28,16 +37,20 @@ export interface EdgeApiClient {
 /**
  * 创建 SDK client 实例。
  *
- * Phase 3 Step 1:
- *   - 返回 PlaceholderClient,所有 service 方法 throw NotImplementedError
- *   - bff-edge 启动不会因为缺真实 EdgeAPI 而失败(便于离线 dev)
+ * mode 选择优先级:config.mode 显式指定 > 凭证完整自动 grpc > placeholder。
  *
- * Phase 3 Step 2+:
- *   - 根据 config.addr 建 @grpc/grpc-js channel
- *   - 加 metadata interceptor 自动注入 nodeid/secret
- *   - 返回 GrpcClient 实现
+ * grpc 实现的代码懒加载(require),避免 placeholder 用户被迫装 grpc 原生模块。
  */
 export function createEdgeApiClient(config: EdgeApiClientConfig): EdgeApiClient {
+  const mode: EdgeApiMode =
+    config.mode ??
+    (config.adminNodeId && config.adminNodeSecret ? "grpc" : "placeholder");
+
+  if (mode === "grpc") {
+    // 懒加载 — placeholder 用户避免装 grpc 原生包
+    const { GrpcEdgeApiClient } = require("./grpc/client");
+    return new GrpcEdgeApiClient(config);
+  }
   return new PlaceholderClient(config);
 }
 

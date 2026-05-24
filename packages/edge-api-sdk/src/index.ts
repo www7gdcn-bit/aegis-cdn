@@ -7,7 +7,9 @@
 export * from "./types";
 export * from "./errors";
 export { createEdgeApiClient } from "./client";
-export type { EdgeApiClient, EdgeApiClientConfig } from "./client";
+export type { EdgeApiClient, EdgeApiClientConfig, EdgeApiMode } from "./client";
+// 仅暴露 buildGoEdgeToken 给测试/排查用,生产代码无需直接调
+export { buildGoEdgeToken } from "./grpc/auth";
 export type { UsersService } from "./services/users";
 export type { DomainsService } from "./services/domains";
 export type { SslService } from "./services/ssl";

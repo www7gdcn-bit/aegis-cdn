@@ -1,38 +1,82 @@
-import { Body, Controller, Get, Param, ParseIntPipe, Post, UseGuards } from "@nestjs/common";
+import {
+  Body, Controller, Get, HttpException, HttpStatus, Logger, Param, ParseIntPipe, Post, UseGuards,
+} from "@nestjs/common";
+import { NotImplementedError } from "@aegis/edge-api-sdk";
 import { InternalTokenGuard } from "../../core/common/internal-token.guard";
 import { EdgeApiClient } from "../../core/edge-api/edge-api.client";
+import { CreateEdgeUserDto, type CreateEdgeUserResult } from "./dto";
 
 // /internal/edge/users — 给 saas-svc 调,把 SaaS Tenant 同步成 GoEdge user。
 @UseGuards(InternalTokenGuard)
 @Controller("users") // 全局前缀 internal/edge/ 已注入
 export class UsersController {
+  private readonly logger = new Logger(UsersController.name);
   constructor(private edgeApi: EdgeApiClient) {}
 
   /**
-   * 创建 GoEdge user(Phase 3 Step 2 真实实现)。
-   * Phase 3 Step 1:占位,返回 todo。
+   * 创建 GoEdge user。
    *
-   * 调用方:saas-svc /api/v1/saas/auth/register 异步调本端点 →
-   *         成功后 saas-svc 写 Tenant.edgeUserId。
+   * Phase 3 Step 2 状态:
+   *   - mode=grpc + admin 凭证齐:真实调 UserService.createUser,返回真实 edgeUserId
+   *   - mode=placeholder:返回 502 with code=EDGE_API_NOT_READY,saas-svc 收到后应入"待 provision"队列
+   *
+   * 错误码契约(返回 HTTP body 含 code):
+   *   502 EDGE_API_NOT_READY    SDK 处于 placeholder 模式(EdgeAPI 未配)
+   *   502 EDGE_API_UNREACHABLE  gRPC 连不上 / 超时
+   *   401 EDGE_API_AUTH_FAILED  admin token 失败(secret 不对 / nodeid 过期)
+   *   409 EDGE_USER_CONFLICT    username 已存在
+   *   500 EDGE_API_ERROR        其他上游错误
    */
   @Post()
-  async create(@Body() _body: { tenantId: number; username: string; email?: string; remark?: string }) {
-    // TODO Phase 3 Step 2: this.edgeApi.users.create({...})
-    return { todo: "POST /internal/edge/users — Phase 3 Step 2 真实接 EdgeAPI gRPC UserService.CreateUser" };
+  async create(@Body() dto: CreateEdgeUserDto): Promise<CreateEdgeUserResult> {
+    try {
+      const u = await this.edgeApi.users.create({
+        username: dto.username,
+        email: dto.email,
+        remark: dto.remark || `saas-tenant-${dto.tenantId}`,
+        source: "aegis-saas",
+      });
+      this.logger.log(`created GoEdge user id=${u.id} username=${u.username} (saas tenantId=${dto.tenantId})`);
+      return { edgeUserId: u.id, username: u.username };
+    } catch (e: any) {
+      if (e instanceof NotImplementedError) {
+        throw new HttpException(
+          { code: "EDGE_API_NOT_READY", message: "EdgeAPI SDK in placeholder mode", detail: e.message },
+          HttpStatus.BAD_GATEWAY,
+        );
+      }
+      const msg = String(e?.message || e);
+      // 简易错误码映射(grpc-js error.code 是数字 grpc.status):
+      //   14 UNAVAILABLE / 4 DEADLINE_EXCEEDED → 502 unreachable
+      //   16 UNAUTHENTICATED / 7 PERMISSION_DENIED → 401 auth
+      //   6  ALREADY_EXISTS → 409 conflict
+      const code: string | undefined = e?.code != null ? String(e.code) : undefined;
+      if (code === "14" || code === "4") {
+        throw new HttpException({ code: "EDGE_API_UNREACHABLE", message: msg }, HttpStatus.BAD_GATEWAY);
+      }
+      if (code === "16" || code === "7") {
+        throw new HttpException({ code: "EDGE_API_AUTH_FAILED", message: msg }, HttpStatus.UNAUTHORIZED);
+      }
+      if (code === "6" || msg.includes("exists")) {
+        throw new HttpException({ code: "EDGE_USER_CONFLICT", message: msg }, HttpStatus.CONFLICT);
+      }
+      this.logger.error(`createGoEdgeUser failed: ${msg}`);
+      throw new HttpException({ code: "EDGE_API_ERROR", message: msg }, HttpStatus.INTERNAL_SERVER_ERROR);
+    }
   }
 
   @Get(":edgeUserId")
   async findById(@Param("edgeUserId", ParseIntPipe) _edgeUserId: number) {
-    return { todo: "GET /internal/edge/users/:edgeUserId — UserService.FindEnabledUser" };
+    return { todo: "GET /internal/edge/users/:edgeUserId — UserService.FindEnabledUser (Phase 3 Step 3+)" };
   }
 
   @Post(":edgeUserId/disable")
   async disable(@Param("edgeUserId", ParseIntPipe) _edgeUserId: number) {
-    return { todo: "POST /internal/edge/users/:edgeUserId/disable" };
+    return { todo: "POST /internal/edge/users/:edgeUserId/disable (Phase 3 Step 3+)" };
   }
 
   @Post(":edgeUserId/enable")
   async enable(@Param("edgeUserId", ParseIntPipe) _edgeUserId: number) {
-    return { todo: "POST /internal/edge/users/:edgeUserId/enable" };
+    return { todo: "POST /internal/edge/users/:edgeUserId/enable (Phase 3 Step 3+)" };
   }
 }

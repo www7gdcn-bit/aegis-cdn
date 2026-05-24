@@ -11,6 +11,7 @@ import { OrdersModule } from "./modules/orders/orders.module";
 import { PaymentModule } from "./modules/payment/payment.module";
 import { KycModule } from "./modules/kyc/kyc.module";
 import { InternalModule } from "./modules/internal/internal.module";
+import { EdgeProvisionModule } from "./modules/edge-provision/edge-provision.module";
 
 @Module({
   imports: [
@@ -29,6 +30,7 @@ import { InternalModule } from "./modules/internal/internal.module";
     PaymentModule,
     KycModule,
     InternalModule,
+    EdgeProvisionModule,
   ],
   controllers: [HealthController],
 })
