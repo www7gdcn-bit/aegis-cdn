@@ -5,7 +5,7 @@ import { BillingService } from "../billing/billing.service";
 import { CreateDomainDto } from "./dto";
 
 @Injectable()
-export class DomainsService {
+export class ProvisioningService {
   constructor(private prisma: PrismaService, private billing: BillingService) {}
 
   private suffix() {

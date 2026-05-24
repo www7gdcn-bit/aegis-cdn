@@ -1,14 +1,15 @@
 import { Body, Controller, Delete, Get, Param, ParseIntPipe, Post, UseGuards } from "@nestjs/common";
-import { DomainsService } from "./domains.service";
+import { ProvisioningService } from "./provisioning.service";
 import { CreateDomainDto } from "./dto";
 import { JwtAuthGuard, AuthUser } from "../../core/common/jwt-auth.guard";
 import { CurrentUser } from "../../core/common/current-user.decorator";
 import { ConfigCompilerService } from "./config-compiler.service";
 
+// 路由保持 /domains(前端契约不变)。
 @UseGuards(JwtAuthGuard)
 @Controller("domains")
-export class DomainsController {
-  constructor(private domains: DomainsService, private compiler: ConfigCompilerService) {}
+export class ProvisioningController {
+  constructor(private domains: ProvisioningService, private compiler: ConfigCompilerService) {}
 
   @Get()
   list(@CurrentUser() u: AuthUser) {

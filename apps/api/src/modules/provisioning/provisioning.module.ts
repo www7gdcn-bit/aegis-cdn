@@ -1,6 +1,6 @@
 import { Module } from "@nestjs/common";
-import { DomainsService } from "./domains.service";
-import { DomainsController } from "./domains.controller";
+import { ProvisioningService } from "./provisioning.service";
+import { ProvisioningController } from "./provisioning.controller";
 import { ConfigCompilerService } from "./config-compiler.service";
 import { BillingModule } from "../billing/billing.module";
 
@@ -8,8 +8,8 @@ import { BillingModule } from "../billing/billing.module";
 // 导出 ConfigCompilerService 供 security-policy / compliance 复用。
 @Module({
   imports: [BillingModule],
-  providers: [DomainsService, ConfigCompilerService],
-  controllers: [DomainsController],
+  providers: [ProvisioningService, ConfigCompilerService],
+  controllers: [ProvisioningController],
   exports: [ConfigCompilerService],
 })
 export class ProvisioningModule {}

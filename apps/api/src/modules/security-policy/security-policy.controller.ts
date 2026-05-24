@@ -1,13 +1,14 @@
 import { Body, Controller, Delete, Param, ParseIntPipe, Post, Put, UseGuards } from "@nestjs/common";
-import { ProtectionService } from "./protection.service";
+import { SecurityPolicyService } from "./security-policy.service";
 import { JwtAuthGuard, AuthUser } from "../../core/common/jwt-auth.guard";
 import { CurrentUser } from "../../core/common/current-user.decorator";
 import { CreateAclDto, CreateRateRuleDto, CreateWafRuleDto, UpdateCcDto, UpdateWafDto } from "./dto";
 
+// 路由保持 /domains/:id/...(前端契约不变;CC/WAF/ACL/RateRule 都是某域名下的策略)。
 @UseGuards(JwtAuthGuard)
 @Controller("domains/:id")
-export class ProtectionController {
-  constructor(private svc: ProtectionService) {}
+export class SecurityPolicyController {
+  constructor(private svc: SecurityPolicyService) {}
 
   @Put("cc")
   cc(@CurrentUser() u: AuthUser, @Param("id", ParseIntPipe) id: number, @Body() dto: UpdateCcDto) {

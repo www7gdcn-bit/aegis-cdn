@@ -1,6 +1,6 @@
 import { Module } from "@nestjs/common";
-import { ProtectionService } from "./protection.service";
-import { ProtectionController } from "./protection.controller";
+import { SecurityPolicyService } from "./security-policy.service";
+import { SecurityPolicyController } from "./security-policy.controller";
 import { BillingModule } from "../billing/billing.module";
 import { ProvisioningModule } from "../provisioning/provisioning.module";
 
@@ -8,7 +8,7 @@ import { ProvisioningModule } from "../provisioning/provisioning.module";
 // ConfigCompilerService 由 ProvisioningModule 提供,这里 import 进来用。
 @Module({
   imports: [BillingModule, ProvisioningModule],
-  providers: [ProtectionService],
-  controllers: [ProtectionController],
+  providers: [SecurityPolicyService],
+  controllers: [SecurityPolicyController],
 })
 export class SecurityPolicyModule {}

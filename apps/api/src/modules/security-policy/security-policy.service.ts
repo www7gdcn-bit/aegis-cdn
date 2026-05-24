@@ -5,7 +5,7 @@ import { ConfigCompilerService } from "../provisioning/config-compiler.service";
 import { CreateAclDto, CreateRateRuleDto, CreateWafRuleDto, UpdateCcDto, UpdateWafDto } from "./dto";
 
 @Injectable()
-export class ProtectionService {
+export class SecurityPolicyService {
   constructor(
     private prisma: PrismaService,
     private compiler: ConfigCompilerService,
