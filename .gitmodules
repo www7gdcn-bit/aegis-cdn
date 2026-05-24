@@ -1,0 +1,9 @@
+[submodule "upstream/EdgeCommon"]
+	path = upstream/EdgeCommon
+	url = https://github.com/TeaOSLab/EdgeCommon.git
+[submodule "upstream/EdgeAPI"]
+	path = upstream/EdgeAPI
+	url = https://github.com/TeaOSLab/EdgeAPI.git
+[submodule "upstream/EdgeNode"]
+	path = upstream/EdgeNode
+	url = https://github.com/TeaOSLab/EdgeNode.git

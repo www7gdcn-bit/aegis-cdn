@@ -42,6 +42,32 @@
 | D6 | 控制台技术栈 | **统一用 `apps/web` (Next.js)**,弃 EdgeAdmin | 现代化前端,通过 bff-edge 调 EdgeAPI gRPC |
 | D7 | docs/14 修正方式 | **就地改 LICENSE 错误 + 顶部加 deprecation notice** | 已执行(Phase 0) |
 
+### 2.1 Submodule 锁定记录(Phase 1 Step 1,2026-05-24)
+
+| submodule | 路径 | 锁定 tag | commit hash |
+| --- | --- | --- | --- |
+| `TeaOSLab/EdgeCommon` | `upstream/EdgeCommon` | **v1.3.9.1** | `8612bdf8558f561eb7c11ea616744357ad2a1a78` |
+| `TeaOSLab/EdgeAPI`    | `upstream/EdgeAPI`    | **v1.3.9.1** | `f61dbb42c5f59996e7a5edd54acbfcbe91de3afa` |
+| `TeaOSLab/EdgeNode`   | `upstream/EdgeNode`   | **v1.3.9**   | `b0d1f2c8ea268dacc812f88cdb5acafd5af1414d` |
+
+> 三仓 go.mod 都用 `replace github.com/TeaOSLab/EdgeCommon => ../EdgeCommon`,
+> 当前 `upstream/{EdgeCommon,EdgeAPI,EdgeNode}` 同级布局正好匹配 upstream 假设。
+> EdgeNode 没有 v1.3.9.1 补丁号(上游未发),其余两仓取各自最新稳定 tag。
+
+**本机 Phase 1 Step 1 编译验证(Windows + go1.26.3)**:
+
+| 仓库 | 验证方式 | 结果 |
+| --- | --- | --- |
+| EdgeAPI | `GOOS=linux GOARCH=amd64 go build ./...` | ✅ 通过 — module 解析、依赖下载、replace 全部正常 |
+| EdgeAPI | 本机 Windows `go build ./...` | ❌ `internal/db/utils/disk.go` 用 Unix-only `unix.Statfs`,缺平台 build tag(上游小瑕疵,不影响 Linux 生产) |
+| EdgeNode | cross-compile linux/amd64 (含 cgo) | ❌ 需要 libinjection + libwebp Linux C 工具链,Windows 无法 cross-compile cgo |
+| EdgeNode | cross-compile linux/amd64 (`CGO_ENABLED=0`) | ❌ `injectionutils` 与 `gowebp` 设计依赖 cgo,关 cgo 无法替代 |
+| EdgeNode | Linux 原生编译 | ⏳ 待 Linux/Docker 环境验证(GoEdge 上游 CI 已保证) |
+
+→ **结论**:submodule 集成正确(go.mod 解析、replace 路径、依赖下载、跨仓引用全部通);
+EdgeNode 完整可编需要 Linux + libinjection-dev + libwebp-dev,生产环境天然满足。
+**Windows 本机不是 EdgeNode 的目标平台**(边缘节点注定 Linux 部署)。
+
 ---
 
 ## 3. 三层架构
