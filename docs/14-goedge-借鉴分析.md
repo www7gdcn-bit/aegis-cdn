@@ -2,15 +2,27 @@
 
 版本 v1.0 · 归档日期 2026-05-24 · 仅参考,不修改本项目代码
 
+> ⚠️ **本文件部分内容已被 [[docs/15-goedge-secondary-development-plan.md]] 取代**(2026-05-24)。
+>
+> **作废范围**:
+> - §11 原写"GoEdge 是 AGPL/商业双授权"为**事实错误** — 实测 LICENSE 文件为 **BSD-3-Clause**,
+>   允许商业闭源使用、修改、再分发,只需保留原版权声明。已就地更正(见 §11)。
+> - §8(对 aegis-cdn 的借鉴点)与 §10(后续可落地建议)是在 v1 自研路线下成立的建议;
+>   项目方向已切换为**基于 GoEdge 二开**(见 docs/15),这些建议**不再适用**,以 docs/15 为准。
+>
+> **仍有效部分**:§1–§7、§9 — 架构观察、模块对比、不建议照搬的部分,
+> 作为对 GoEdge 内部结构的快速理解资料,继续保留参考价值。
+
 > 本文是对 GoEdge 开源 CDN/WAF 平台的源码架构观察笔记,
 > 用于对比 aegis-cdn 的设计、识别可借鉴的部分、识别不必照搬的部分。
 > 阅读对象:aegis-cdn 后续设计决策者。
 >
 > **重要边界声明**:
 > - 本文档**只做架构分析**,不直接搬运 GoEdge 任何代码片段进 aegis-cdn。
-> - GoEdge 是 AGPL/商业双授权,直接复用代码有合规风险;**借鉴仅限设计思想**。
-> - aegis-cdn 已在 [[docs/13]] 确定"成熟件做底层 + 我们做 SaaS"路线,
->   与 GoEdge"全自研"路线**不同**;本文不动摇 [[docs/13]] 决策,只是吸收可用思想。
+> - GoEdge 是 **BSD-3-Clause** 授权(已实测 LICENSE 文件);允许商业闭源复用,二开无合规风险。
+>   docs/15 起,项目方向已切换为基于 GoEdge 二开,本文 §8/§10 建议已不适用。
+> - aegis-cdn 曾在 [[docs/13]] 确定"成熟件做底层 + 我们做 SaaS"路线 — 此路线在 docs/15
+>   下已被"基于 GoEdge 底座 + 商业化增强"取代;本文仅作架构分析参考。
 
 ---
 
@@ -394,4 +406,8 @@ OCSP response 并装订到 TLS 握手 —— 客户端 TLS 验证不再每次回
 - 项目记忆:[[project-aegis-cdn]]
 - GoEdge 官网:https://goedge.cloud (官方文档与商业版)
 - GoEdge 仓库:`TeaOSLab/EdgeAdmin`、`TeaOSLab/EdgeAPI`、`TeaOSLab/EdgeNode`、`TeaOSLab/EdgeCommon`
-- 许可:GoEdge 是 AGPL/商业双授权;**不可直接 copy 代码**;借鉴限于设计思想。
+- **许可(已修正 2026-05-24)**:GoEdge 是 **BSD-3-Clause** 授权(已实测 LICENSE 文件 —
+  EdgeAPI/LICENSE 与 EdgeNode/LICENSE 均为 BSD 3-Clause License, Copyright (c) 2020,
+  LiuXiangChao)。允许商业闭源使用、修改、再分发,只需保留原版权声明。
+  **docs/15 进入二开正式方案,可直接 fork/复用源码,不必再受"借鉴仅限设计思想"约束**。
+  原 v1 草稿曾误写"AGPL/商业双授权",特此勘误。
