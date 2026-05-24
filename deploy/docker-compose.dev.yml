@@ -1,0 +1,193 @@
+# aegis-cdn 本地开发环境 — Phase 1 Step 3
+#
+# 服务清单(5个):
+#   aegis-mysql      ← GoEdge EdgeAPI 业务库
+#   aegis-redis      ← GoEdge + 我们 SaaS 共享
+#   aegis-edgeapi    ← GoEdge 控制面(gRPC + REST)
+#   aegis-edgenode   ← GoEdge 边缘节点(反代 + WAF + CC)
+#   aegis-postgres   ← 占位给 services/saas-svc(Phase 2 启用)
+#
+# 启动:
+#   cp deploy/.env.example deploy/.env   (改弱密码!)
+#   docker compose -f deploy/docker-compose.dev.yml --env-file deploy/.env up -d --build
+#
+# 初始化:见 deploy/README.md「首次启动 5 步」。
+#
+# 说明:
+# - 本机无 Docker,本文件按生产形态编写,未实跑(沿用项目一贯做法)。
+# - aegis tag 镜像留到 Phase 5(第一个 overlay 落地)启用,Step 3 先验证社区版能起。
+
+name: aegis-dev
+
+networks:
+  aegis-dev:
+    driver: bridge
+
+volumes:
+  aegis-mysql-data:
+  aegis-redis-data:
+  aegis-edgeapi-configs:    # api.yaml 由 setup 写入,持久化避免每次重启重做
+  aegis-edgeapi-logs:
+  aegis-edgenode-configs:   # cluster.yaml(集群自动接入模式)
+  aegis-edgenode-cache:
+  aegis-edgenode-logs:
+  aegis-postgres-data:
+
+services:
+
+  # ──────────────────────────────────────────────────────────────
+  # 1. MySQL 8 — GoEdge EdgeAPI 业务库
+  # ──────────────────────────────────────────────────────────────
+  mysql:
+    image: mysql:8.0
+    container_name: aegis-mysql
+    restart: unless-stopped
+    networks: [aegis-dev]
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?MYSQL_ROOT_PASSWORD required}
+      MYSQL_DATABASE:      ${MYSQL_DATABASE:-db_edge}
+      MYSQL_USER:          ${MYSQL_USER:-edge}
+      MYSQL_PASSWORD:      ${MYSQL_PASSWORD:?MYSQL_PASSWORD required}
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --default-authentication-plugin=mysql_native_password
+      - --max-connections=500
+    volumes:
+      - aegis-mysql-data:/var/lib/mysql
+    ports:
+      - "127.0.0.1:${MYSQL_PORT:-3306}:3306"
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-p$$MYSQL_ROOT_PASSWORD"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  # ──────────────────────────────────────────────────────────────
+  # 2. Redis — GoEdge + SaaS 共享(Phase 2 起多 logical DB)
+  # ──────────────────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: aegis-redis
+    restart: unless-stopped
+    networks: [aegis-dev]
+    command:
+      - redis-server
+      - --requirepass
+      - ${REDIS_PASSWORD:?REDIS_PASSWORD required}
+      - --appendonly
+      - "yes"
+      - --maxmemory
+      - "256mb"
+      - --maxmemory-policy
+      - "allkeys-lru"
+    volumes:
+      - aegis-redis-data:/data
+    ports:
+      - "127.0.0.1:${REDIS_PORT:-6379}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # ──────────────────────────────────────────────────────────────
+  # 3. EdgeAPI — GoEdge 控制面
+  #    端口:
+  #      8003  RPC(节点 / EdgeAdmin / bff-edge 调用)
+  #      8004  REST(可选,未来 bff-edge 可走 REST)
+  #    首次启动 entrypoint 会自动跑 `edge-api setup`(幂等),建表 + 建 admin token + 写 api.yaml。
+  # ──────────────────────────────────────────────────────────────
+  edgeapi:
+    container_name: aegis-edgeapi
+    restart: unless-stopped
+    networks: [aegis-dev]
+    build:
+      context: ..
+      dockerfile: deploy/docker/edgeapi.Dockerfile
+      args:
+        BUILD_TAGS: ""          # Phase 5 改为 "aegis" 启用 overlay
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      # entrypoint 用这些渲染 db.yaml + 跑 setup
+      AEGIS_MYSQL_HOST:     mysql
+      AEGIS_MYSQL_PORT:     "3306"
+      AEGIS_MYSQL_USER:     ${MYSQL_USER:-edge}
+      AEGIS_MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+      AEGIS_MYSQL_DATABASE: ${MYSQL_DATABASE:-db_edge}
+      # setup 命令参数 — 决定第一次创建的 API node 注册地址
+      EDGE_API_PROTOCOL: ${EDGE_API_PROTOCOL:-http}
+      EDGE_API_HOST:     ${EDGE_API_HOST:-edgeapi}     # 容器名,EdgeNode 通过这个 DNS 访问
+      EDGE_API_PORT:     ${EDGE_API_PORT:-8003}
+    volumes:
+      - aegis-edgeapi-configs:/app/configs
+      - aegis-edgeapi-logs:/app/logs
+    ports:
+      - "127.0.0.1:${EDGE_API_PORT:-8003}:8003"   # gRPC
+      - "127.0.0.1:${EDGE_API_REST_PORT:-8004}:8004"   # REST(可选)
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:8003 || exit 0"]   # RPC 不响应 HTTP GET,只判端口存活
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+
+  # ──────────────────────────────────────────────────────────────
+  # 4. EdgeNode — GoEdge 边缘节点
+  #    需要先在 EdgeAPI 创建 cluster + 拿到 clusterId/secret,见 deploy/README.md 「首次启动 5 步」。
+  #    端口:
+  #      80/443  反代客户域名(dev 阶段映射到本机 8080/8443)
+  # ──────────────────────────────────────────────────────────────
+  edgenode:
+    container_name: aegis-edgenode
+    restart: unless-stopped
+    networks: [aegis-dev]
+    build:
+      context: ..
+      dockerfile: deploy/docker/edgenode.Dockerfile
+      args:
+        BUILD_TAGS: ""          # Phase 6/7 改为 "aegis" 启用 CC/WAF overlay
+    depends_on:
+      edgeapi:
+        condition: service_healthy
+    environment:
+      # entrypoint 用这些渲染 cluster.yaml(集群自动接入模式)
+      AEGIS_EDGE_API_ENDPOINTS: ${AEGIS_EDGE_API_ENDPOINTS:-http://edgeapi:8003}
+      AEGIS_CLUSTER_ID:         ${EDGE_NODE_CLUSTER_ID:-}        # 首次启动前必须填,空则启动失败
+      AEGIS_CLUSTER_SECRET:     ${EDGE_NODE_CLUSTER_SECRET:-}    # 同上
+    volumes:
+      - aegis-edgenode-configs:/app/configs
+      - aegis-edgenode-cache:/app/cache
+      - aegis-edgenode-logs:/app/logs
+    ports:
+      - "${EDGE_NODE_HTTP_PORT:-8080}:80"
+      - "${EDGE_NODE_HTTPS_PORT:-8443}:443"
+
+  # ──────────────────────────────────────────────────────────────
+  # 5. PostgreSQL 17 — 占位给 services/saas-svc(Phase 2 才真正用)
+  # ──────────────────────────────────────────────────────────────
+  postgres:
+    image: postgres:17-alpine
+    container_name: aegis-postgres
+    restart: unless-stopped
+    networks: [aegis-dev]
+    environment:
+      POSTGRES_DB:       ${POSTGRES_DB:-aegis_saas}
+      POSTGRES_USER:     ${POSTGRES_USER:-aegis}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD required}
+    volumes:
+      - aegis-postgres-data:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
