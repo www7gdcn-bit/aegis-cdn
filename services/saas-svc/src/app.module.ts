@@ -5,6 +5,7 @@ import { RedisModule } from "./core/redis/redis.module";
 import { HealthController } from "./core/health.controller";
 import { AuthModule } from "./modules/identity/auth.module";
 import { TenantModule } from "./modules/tenant/tenant.module";
+import { PlansModule } from "./modules/plans/plans.module";
 
 @Module({
   imports: [
@@ -17,6 +18,7 @@ import { TenantModule } from "./modules/tenant/tenant.module";
     RedisModule,
     AuthModule,
     TenantModule,
+    PlansModule,
   ],
   controllers: [HealthController],
 })
