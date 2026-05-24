@@ -6,7 +6,8 @@ import { RolesGuard } from "../../core/common/roles.guard";
 import { Roles } from "../../core/common/roles.decorator";
 import { CurrentUser } from "../../core/common/current-user.decorator";
 
-// 平台管理侧:接入审核 / KYC 审核 / 全局封禁。仅 admin/operator。
+// 平台管理侧:接入审核 / 全局封禁。仅 admin/operator。
+// KYC 审核已迁到 saas-svc(POST /api/v1/saas/admin/kyc/:tenantId)。
 @UseGuards(JwtAuthGuard, RolesGuard)
 @Roles("admin", "operator")
 @Controller("admin")
@@ -21,16 +22,6 @@ export class AdminComplianceController {
   @Post("reviews/:id")
   review(@Param("id", ParseIntPipe) id: number, @Body() dto: ReviewDto) {
     return this.svc.reviewDomain(id, dto.action);
-  }
-
-  @Get("kyc")
-  kyc() {
-    return this.svc.pendingKyc();
-  }
-
-  @Post("kyc/:tenantId")
-  reviewKyc(@Param("tenantId", ParseIntPipe) tenantId: number, @Body() dto: ReviewDto) {
-    return this.svc.reviewKyc(tenantId, dto.action);
   }
 
   @Get("blocks")

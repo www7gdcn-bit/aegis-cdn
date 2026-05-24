@@ -10,6 +10,8 @@
 
 generator client {
   provider = "prisma-client-js"
+  // 独立 output 避免与 apps/api 的 @prisma/client 在共享 node_modules 中互相覆盖
+  output   = "./generated/client"
 }
 
 datasource db {

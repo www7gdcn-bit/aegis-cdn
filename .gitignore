@@ -13,3 +13,5 @@ coverage/
 *.mmdb
 # Go 编译产物
 edge/agent/*.exe
+# Prisma 各 service 独立 client 生成目录
+services/*/prisma/generated/
