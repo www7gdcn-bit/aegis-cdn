@@ -98,6 +98,14 @@ model SaasDomain {
   lastSslAttemptAt    DateTime? // 上次尝试 ACME(无论成功/失败)
   lastSslError        String?   // ACME 失败原因;成功时清空
 
+  // Phase 3 Step 6.5 — 证书绑定到 GoEdge server 状态
+  // 与 sslStatus 解耦:证书可能签发成功(sslStatus=issued)但绑 server 失败,
+  // 此时 sslStatus 保留 issued,sslBindingStatus=failed 让运营可见,可手动 retry。
+  sslPolicyId         Int?      // GoEdge SSLPolicy.id(每次签发/续期新建一个,旧的不清理)
+  sslBoundAt          DateTime? // 最近一次绑定成功时间
+  sslBindingStatus    String    @default("pending") // pending|bound|failed
+  sslBindingError     String?   // 绑定失败原因(updateServerHTTPS / createSSLPolicy 报错)
+
   createdAt           DateTime  @default(now())
   updatedAt           DateTime  @updatedAt
 

@@ -124,13 +124,125 @@ export class SslService {
         sslExpiresAt: expiresAt,
         sslRenewedAt: opts.isRenew ? now : null,
         lastSslError: null,
+        // 新签发即标记 binding 待处理,接下来同步调 bindCert
+        sslBindingStatus: "pending",
+        sslBindingError: null,
       },
     });
 
     this.logger.log(
       `${opts.isRenew ? "RENEWED" : "ISSUED"} ssl domain=${d.domain} certId=${body.sslCertId} expiresAt=${expiresAt?.toISOString() || "?"}`,
     );
-    return updated;
+
+    // 接续:绑证书到 GoEdge server HTTPS 配置(Step 6.5)
+    // 失败不覆盖 sslStatus,仅 sslBindingStatus=failed,运营可走 rebind-cert 手动补
+    if (d.edgeDomainId) {
+      await this.bindCertToServer(d.id, d.edgeDomainId, body.sslCertId).catch((e) => {
+        this.logger.warn(`bindCert async error caught: ${e?.message || e}`);
+      });
+    } else {
+      // edgeDomainId 不存在意味着 SaasDomain 状态机异常(active 但没绑 GoEdge server)
+      await this.prisma.saasDomain.update({
+        where: { id: d.id },
+        data: {
+          sslBindingStatus: "failed",
+          sslBindingError: "domain has no edgeDomainId — 数据异常",
+        },
+      });
+    }
+
+    // 返回最终态(可能含 binding 结果) — findUniqueOrThrow 保证非 null(刚才已 update 过)
+    return this.prisma.saasDomain.findUniqueOrThrow({ where: { id: d.id } });
+  }
+
+  /**
+   * 把证书绑到 GoEdge server HTTPS。
+   *
+   * 失败策略(用户明确):
+   *   - **不覆盖** sslStatus=issued
+   *   - 仅写 sslBindingStatus=failed + sslBindingError
+   *   - 运营可走 POST /admin/domains/:id/rebind-cert 手动补,无需重新签证书
+   */
+  async bindCertToServer(domainId: number, edgeDomainId: number, certId: number): Promise<void> {
+    let res: Response;
+    try {
+      res = await fetch(`${this.bffBase}/internal/edge/domains/${edgeDomainId}/bind-cert`, {
+        method: "POST",
+        headers: this.headers(),
+        body: JSON.stringify({ certId }),
+      });
+    } catch (e: any) {
+      const msg = String(e?.message || e);
+      await this.prisma.saasDomain.update({
+        where: { id: domainId },
+        data: {
+          sslBindingStatus: "failed",
+          sslBindingError: `BFF_EDGE_UNREACHABLE: ${msg}`,
+        },
+      });
+      this.logger.warn(`bindCert id=${domainId} unreachable: ${msg}`);
+      return;
+    }
+
+    if (!res.ok) {
+      let body: any = null;
+      try { body = await res.json(); } catch { /* */ }
+      const code = body?.code || `HTTP_${res.status}`;
+      const reason = body?.message || `bff-edge returned ${res.status}`;
+      await this.prisma.saasDomain.update({
+        where: { id: domainId },
+        data: {
+          sslBindingStatus: "failed",
+          sslBindingError: `${code}: ${reason}`,
+        },
+      });
+      this.logger.warn(`bindCert id=${domainId} FAIL: ${code} ${reason}`);
+      return;
+    }
+
+    const body = await res.json() as { success: boolean; sslPolicyId?: number };
+    if (!body.success) {
+      await this.prisma.saasDomain.update({
+        where: { id: domainId },
+        data: {
+          sslBindingStatus: "failed",
+          sslBindingError: "bff-edge returned success=false without code",
+        },
+      });
+      return;
+    }
+
+    await this.prisma.saasDomain.update({
+      where: { id: domainId },
+      data: {
+        sslBindingStatus: "bound",
+        sslBindingError: null,
+        sslBoundAt: new Date(),
+        sslPolicyId: body.sslPolicyId ?? null,
+      },
+    });
+    this.logger.log(`bound cert domainId=${domainId} sslPolicyId=${body.sslPolicyId}`);
+  }
+
+  /**
+   * 仅重绑(不重新申请证书) — 运营介入用,无需消耗 LE rate limit。
+   * 前置:sslCertId 必须存在(否则要走 issueOrRenew)。
+   */
+  async rebindCert(domainId: number) {
+    const d = await this.prisma.saasDomain.findUnique({ where: { id: domainId } });
+    if (!d) throw new NotFoundException("domain not found");
+    if (!d.sslCertId) {
+      throw new BadRequestException("尚未签发证书 — 请先调 issue-ssl,不要用 rebind-cert");
+    }
+    if (!d.edgeDomainId) {
+      throw new BadRequestException("domain 未绑 GoEdge server — 数据异常");
+    }
+    await this.prisma.saasDomain.update({
+      where: { id: d.id },
+      data: { sslBindingStatus: "pending", sslBindingError: null },
+    });
+    await this.bindCertToServer(d.id, d.edgeDomainId, d.sslCertId);
+    return this.prisma.saasDomain.findUniqueOrThrow({ where: { id: d.id } });
   }
 
   private async fail(domainId: number, isRenew: boolean | undefined, code: string, reason: string) {

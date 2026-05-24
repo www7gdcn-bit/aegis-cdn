@@ -1,5 +1,5 @@
 import * as grpc from "@grpc/grpc-js";
-import type { DomainsService } from "../../services/domains";
+import type { BindCertInput, BindCertResult, DomainsService } from "../../services/domains";
 import type { CreateDomainInput, DomainSummary, EdgeServerId, EdgeUserId } from "../../types";
 import { EdgeApiError } from "../../errors";
 
@@ -20,8 +20,9 @@ import { EdgeApiError } from "../../errors";
 
 export class GrpcDomainsService implements DomainsService {
   constructor(
-    private stub: any,                            // grpc-js Client(由 GrpcEdgeApiClient 注入)
+    private stub: any,                            // ServerService stub
     private metadata: () => grpc.Metadata,
+    private sslPolicyStub?: any,                  // SSLPolicyService stub(Step 6.5 注入,bindCert 用)
   ) {}
 
   async create(input: CreateDomainInput): Promise<DomainSummary> {
@@ -115,5 +116,85 @@ export class GrpcDomainsService implements DomainsService {
         resolve();
       });
     });
+  }
+
+  // Phase 3 Step 6.5 — 把证书绑到 server HTTPS 配置上
+  async bindCert(input: BindCertInput): Promise<BindCertResult> {
+    if (!this.sslPolicyStub) {
+      throw new EdgeApiError("sslPolicyStub not injected — GrpcEdgeApiClient 构造时漏注 SSLPolicyService stub");
+    }
+    if (!input.serverId) throw new EdgeApiError("BindCertInput.serverId required");
+    if (!input.certId) throw new EdgeApiError("BindCertInput.certId required");
+
+    const http2Enabled = input.http2Enabled ?? true;
+    const listenPort = String(input.listenPort ?? 443);
+
+    // 1) createSSLPolicy
+    // sslCertsJSON 是 bytes,装 SSLCertRef[] 的 JSON:[{sslCertId, isOn}]
+    // GoEdge 内部解析 — 字段名按 EdgeCommon model_ssl_cert.proto 的 camelCase 规范
+    const sslCertsJSON = Buffer.from(JSON.stringify([
+      { sslCertId: input.certId, isOn: true },
+    ]), "utf8");
+
+    const sslPolicyId: number = await new Promise((resolve, reject) => {
+      this.sslPolicyStub.createSSLPolicy(
+        {
+          http2Enabled,
+          http3Enabled: false,
+          minVersion: "TLS 1.2",
+          sslCertsJSON,
+          hstsJSON: Buffer.alloc(0),
+          clientAuthType: 0,
+          clientCACertsJSON: Buffer.alloc(0),
+          cipherSuites: [],
+          cipherSuitesIsOn: false,
+          ocspIsOn: false,
+        },
+        this.metadata(),
+        (err: grpc.ServiceError | null, res: any) => {
+          if (err) {
+            return reject(new EdgeApiError(
+              `SSLPolicyService.createSSLPolicy failed: ${err.message}`,
+              err.code != null ? String(err.code) : undefined,
+              err,
+            ));
+          }
+          const id = Number(res?.sslPolicyId ?? 0);
+          if (!id) return reject(new EdgeApiError("createSSLPolicy returned empty sslPolicyId"));
+          resolve(id);
+        },
+      );
+    });
+
+    // 2) updateServerHTTPS
+    // httpsJSON 是 HTTPSProtocolConfig 的 JSON 序列化,核心字段:
+    //   isOn / listen[]:NetworkAddressConfig{protocol,portRange} / sslPolicy:{isOn,sslPolicyId} /
+    //   http2Enabled / http3Enabled
+    const httpsJSON = Buffer.from(JSON.stringify({
+      isOn: true,
+      listen: [{ protocol: "https", portRange: listenPort }],
+      sslPolicy: { isOn: true, sslPolicyId },
+      http2Enabled,
+      http3Enabled: false,
+    }), "utf8");
+
+    await new Promise<void>((resolve, reject) => {
+      this.stub.updateServerHTTPS(
+        { serverId: input.serverId, httpsJSON },
+        this.metadata(),
+        (err: grpc.ServiceError | null) => {
+          if (err) {
+            return reject(new EdgeApiError(
+              `ServerService.updateServerHTTPS failed: ${err.message}`,
+              err.code != null ? String(err.code) : undefined,
+              err,
+            ));
+          }
+          resolve();
+        },
+      );
+    });
+
+    return { sslPolicyId, serverId: input.serverId };
   }
 }

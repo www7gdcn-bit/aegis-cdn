@@ -67,4 +67,16 @@ export class AdminDomainsController {
   async sslDetail(@Param("id", ParseIntPipe) id: number) {
     return this.ssl.getStatus(id);
   }
+
+  /**
+   * Phase 3 Step 6.5 — 手动重绑证书。
+   *
+   * 场景:ACME 签发成功(sslStatus=issued, sslCertId 已写),但 bindCert 失败
+   *   (sslBindingStatus=failed)— 通常是 GoEdge createSSLPolicy 或 updateServerHTTPS
+   *   返错。运营修复 GoEdge 后调本接口,无需重新申请证书(避免 LE rate limit)。
+   */
+  @Post(":id/rebind-cert")
+  async rebindCert(@Param("id", ParseIntPipe) id: number) {
+    return this.ssl.rebindCert(id);
+  }
 }

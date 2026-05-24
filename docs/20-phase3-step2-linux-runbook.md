@@ -263,3 +263,100 @@ docker compose -f deploy/docker-compose.dev.yml --profile saas \
 | #6 connection 复用 | Step 5+ 加 domains/ssl 时需要时验证 |
 | #7 错误码映射 | 已在本机覆盖 4/14 status code;实际 EdgeAPI 业务错可能出 code=2 UNKNOWN,Linux 实测后按真实补 |
 | #8 proto 字段升级 | 上游 sync 时检查,与本 Step 无关 |
+
+---
+
+## 10. Phase 3 Step 6.5 — SSL 绑定真实生效验证(P0)
+
+签发证书只是第一步,**必须验证 EdgeNode 真的用了该证书握手**。
+
+### 10.1 前置准备
+
+1. 完整跑过 §5(添加域名)+ Step 5(DNS 验证通过 → status=active)
+2. saas-svc 已配 `EDGE_DEFAULT_ACME_USER_ID`(平台运营在 GoEdge 注册的共用 ACME User)
+3. EdgeNode 容器已起,80/443 端口暴露
+
+### 10.2 触发 SSL 签发 + 绑定
+
+方式 A:等 `SslAutoIssueCron`(每 5min)自动跑;
+方式 B:立即触发:
+```bash
+INTERNAL_TOKEN=$(grep AEGIS_INTERNAL_SECRET deploy/.env | cut -d= -f2)
+# 用户视角:
+JWT="..."  # 用户登录后拿
+curl -X POST "http://127.0.0.1:4001/api/v1/saas/domains/<id>/issue-ssl" \
+     -H "Authorization: Bearer $JWT"
+```
+
+期望返回(同步阻塞 30s-2min):
+```json
+{
+  "sslStatus": "issued",
+  "sslCertId": 1,
+  "sslIssuedAt": "...",
+  "sslExpiresAt": "..."   // 约 90 天后
+}
+```
+
+### 10.3 验证绑定状态
+
+```bash
+curl "http://127.0.0.1:4001/api/v1/saas/domains/<id>/ssl" \
+     -H "Authorization: Bearer $JWT"
+```
+
+**关键字段**:
+- `sslStatus: "issued"` — ACME 签发成功
+- `sslBindingStatus: "bound"` — **证书已绑到 GoEdge server HTTPS 配置**
+- `sslBoundAt` — 不为 null
+- `sslPolicyId` — GoEdge 新建的 SSLPolicy id
+
+若 `sslBindingStatus=failed`:
+```bash
+# 看错误
+curl -s "http://127.0.0.1:4001/api/v1/saas/admin/domains/<id>" \
+     -H "Authorization: Bearer $ADMIN_JWT" | jq '.sslBindingError'
+
+# 手动重绑(无需重签证书,不消耗 LE rate limit)
+curl -X POST "http://127.0.0.1:4001/api/v1/saas/admin/domains/<id>/rebind-cert" \
+     -H "Authorization: Bearer $ADMIN_JWT"
+```
+
+### 10.4 真实证书握手验证(必测)
+
+```bash
+# 假设 example.com 已配 CNAME 到 <hex>.aegiscdn.com,DNS 已生效
+curl -Iv https://example.com 2>&1 | grep -E "subject|issuer|HTTP/"
+```
+
+**预期输出**:
+```
+*  subject: CN=example.com
+*  issuer: C=US; O=Let's Encrypt; CN=R3   (或 R10/R11/E5 等 LE 中间证书)
+< HTTP/2 200
+```
+
+**确认**:
+- ✅ subject 与请求域名匹配(`CN=example.com`)
+- ✅ issuer 是 Let's Encrypt(**不是** GoEdge 默认自签 `O=GoEdge` / `O=TeaOS`)
+- ✅ HTTP/2 协商成功(说明 sslPolicy 的 http2Enabled=true 生效)
+- ✅ HTTP 200(或 5xx 取决于源站,**重点是 TLS 握手不报错**)
+
+### 10.5 如果失败 — 排查路径
+
+| 现象 | 可能原因 | 排查 |
+| --- | --- | --- |
+| `curl: SSL certificate problem` | EdgeNode 用了默认/自签证书,sslPolicy 未生效 | 1. 看 saas-svc 日志看 bindCertToServer 是否调通;2. `docker compose exec mysql mysql ... db_edge -e "SELECT id,httpsJSON FROM edgeServers WHERE id=<edgeDomainId>"` 看 httpsJSON 是否含 sslPolicy 字段;3. EdgeNode 是否需要 reload 配置 |
+| `subject=CN=GoEdge` | sslPolicy 内 sslCertId 没生效;httpsJSON.sslPolicy.isOn=false 之类 | 用 admin rebind-cert 重试;若仍失败查 GoEdge SSLPolicyService.findEnabledSSLPolicyConfig |
+| `HTTP/1.1`(不是 HTTP/2) | http2Enabled=false,但握手成功 | 不影响 TLS;若要 h2 检查 sslPolicy.http2Enabled 字段 |
+| 连接超时 | EdgeNode 443 未起 / 防火墙 | `nc -zv edgenode-host 443` |
+| `subject=CN=<hex>.aegiscdn.com` | CNAME 还未生效(用户域名指向 cnameTarget),DNS 缓存 | 等 TTL 过 or `dig +short example.com CNAME` 确认 |
+
+### 10.6 续期验证(可选,长期)
+
+LE 默认 90 天到期。生产环境观察:剩余 30 天时 `SslAutoIssueCron` 应自动续期:
+- `sslStatus` 短暂 `renewing` → 回到 `issued`
+- `sslRenewedAt` 更新
+- `sslExpiresAt` 推后 90 天
+
+手动模拟:在 saas-svc 直接 SQL 把 `sslExpiresAt` 改成 now+10d,等下个 cron 周期触发。

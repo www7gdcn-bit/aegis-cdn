@@ -2,10 +2,15 @@ import {
   Body, Controller, Delete, Get, HttpException, HttpStatus, Logger,
   Param, ParseIntPipe, Post, Query, UseGuards,
 } from "@nestjs/common";
+import { IsInt, Min } from "class-validator";
 import { NotImplementedError } from "@aegis/edge-api-sdk";
 import { InternalTokenGuard } from "../../core/common/internal-token.guard";
 import { EdgeApiClient } from "../../core/edge-api/edge-api.client";
 import { CreateEdgeDomainDto, type CreateEdgeDomainResult } from "./dto";
+
+class BindCertDto {
+  @IsInt() @Min(1) certId!: number;
+}
 
 // /internal/edge/domains — saas-svc 调,把 SaaS 用户的域名落到 GoEdge。
 //
@@ -69,6 +74,28 @@ export class DomainsController {
     try {
       await this.edgeApi.domains.remove(serverId);
       return { ok: true };
+    } catch (e: any) {
+      throw this.mapError(e);
+    }
+  }
+
+  /**
+   * 把证书绑到 server 的 HTTPS 配置(Phase 3 Step 6.5)。
+   * 内部 SDK 两步:createSSLPolicy + updateServerHTTPS。
+   * 返回 { success, sslPolicyId }。
+   */
+  @Post(":serverId/bind-cert")
+  async bindCert(
+    @Param("serverId", ParseIntPipe) serverId: number,
+    @Body() dto: BindCertDto,
+  ) {
+    try {
+      const r = await this.edgeApi.domains.bindCert({
+        serverId,
+        certId: dto.certId,
+      });
+      this.logger.log(`bound certId=${dto.certId} → serverId=${serverId} sslPolicyId=${r.sslPolicyId}`);
+      return { success: true, sslPolicyId: r.sslPolicyId, serverId };
     } catch (e: any) {
       throw this.mapError(e);
     }

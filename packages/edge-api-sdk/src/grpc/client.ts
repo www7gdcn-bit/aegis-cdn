@@ -46,8 +46,10 @@ export class GrpcEdgeApiClient implements EdgeApiClient {
 
     const serverProto = loadProto("service_server.proto") as any;
     const serverStub = new serverProto.pb.ServerService(config.addr, creds);
-    this.domains = new GrpcDomainsService(serverStub, () => this.buildMetadata());
-    this.stubs.push(serverStub);
+    const sslPolicyProto = loadProto("service_ssl_policy.proto") as any;
+    const sslPolicyStub = new sslPolicyProto.pb.SSLPolicyService(config.addr, creds);
+    this.domains = new GrpcDomainsService(serverStub, () => this.buildMetadata(), sslPolicyStub);
+    this.stubs.push(serverStub, sslPolicyStub);
 
     const acmeProto = loadProto("service_acme_task.proto") as any;
     const acmeStub = new acmeProto.pb.ACMETaskService(config.addr, creds);
