@@ -1,9 +1,9 @@
 import { Body, Controller, Get, Param, Patch, Post, UseGuards } from "@nestjs/common";
 import { PaymentService } from "./payment.service";
 import { UpdateGatewayDto, RefundDto } from "./dto";
-import { JwtAuthGuard } from "../common/jwt-auth.guard";
-import { RolesGuard } from "../common/roles.guard";
-import { Roles } from "../common/roles.decorator";
+import { JwtAuthGuard } from "../../core/common/jwt-auth.guard";
+import { RolesGuard } from "../../core/common/roles.guard";
+import { Roles } from "../../core/common/roles.decorator";
 
 // 管理侧:支付网关配置(商户ID/Key/Secret/开关/手续费/汇率/图标/排序/沙盒,后台热更新)+ 支付查询/退款
 @UseGuards(JwtAuthGuard, RolesGuard)

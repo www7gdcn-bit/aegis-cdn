@@ -1,6 +1,6 @@
 import { Injectable } from "@nestjs/common";
-import { PrismaService } from "../prisma/prisma.service";
-import { RedisService } from "../redis/redis.service";
+import { PrismaService } from "../../core/prisma/prisma.service";
+import { RedisService } from "../../core/redis/redis.service";
 import { BillingService } from "../billing/billing.service";
 
 // 把某域名的 DB 策略编译成边缘 OpenResty(config.lua)认识的 JSON,并下发到 Redis。

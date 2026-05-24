@@ -1,8 +1,8 @@
 import { Body, Controller, Get, Post, UseGuards } from "@nestjs/common";
 import { ComplianceService } from "./compliance.service";
 import { SubmitKycDto } from "./dto";
-import { JwtAuthGuard, AuthUser } from "../common/jwt-auth.guard";
-import { CurrentUser } from "../common/current-user.decorator";
+import { JwtAuthGuard, AuthUser } from "../../core/common/jwt-auth.guard";
+import { CurrentUser } from "../../core/common/current-user.decorator";
 
 // 租户侧:提交 / 查看企业实名(KYC)
 @UseGuards(JwtAuthGuard)

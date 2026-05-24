@@ -1,7 +1,7 @@
 import { Body, Controller, Delete, Param, ParseIntPipe, Post, Put, UseGuards } from "@nestjs/common";
 import { ProtectionService } from "./protection.service";
-import { JwtAuthGuard, AuthUser } from "../common/jwt-auth.guard";
-import { CurrentUser } from "../common/current-user.decorator";
+import { JwtAuthGuard, AuthUser } from "../../core/common/jwt-auth.guard";
+import { CurrentUser } from "../../core/common/current-user.decorator";
 import { CreateAclDto, CreateRateRuleDto, CreateWafRuleDto, UpdateCcDto, UpdateWafDto } from "./dto";
 
 @UseGuards(JwtAuthGuard)

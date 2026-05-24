@@ -1,7 +1,7 @@
 import { ForbiddenException, Injectable, NotFoundException } from "@nestjs/common";
-import { PrismaService } from "../prisma/prisma.service";
+import { PrismaService } from "../../core/prisma/prisma.service";
 import { BillingService } from "../billing/billing.service";
-import { ConfigCompilerService } from "./config-compiler.service";
+import { ConfigCompilerService } from "../provisioning/config-compiler.service";
 import { CreateAclDto, CreateRateRuleDto, CreateWafRuleDto, UpdateCcDto, UpdateWafDto } from "./dto";
 
 @Injectable()

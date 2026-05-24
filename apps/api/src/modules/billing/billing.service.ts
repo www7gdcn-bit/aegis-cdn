@@ -1,6 +1,6 @@
 import { BadRequestException, HttpException, Injectable, NotFoundException, OnModuleInit } from "@nestjs/common";
 import { randomBytes } from "crypto";
-import { PrismaService } from "../prisma/prisma.service";
+import { PrismaService } from "../../core/prisma/prisma.service";
 
 type Features = { cc: boolean; waf: boolean; geo: boolean; bot: boolean; dedicated: boolean };
 

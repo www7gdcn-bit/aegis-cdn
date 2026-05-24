@@ -1,6 +1,6 @@
 import { ConflictException, Injectable, NotFoundException } from "@nestjs/common";
 import { randomBytes } from "crypto";
-import { PrismaService } from "../prisma/prisma.service";
+import { PrismaService } from "../../core/prisma/prisma.service";
 import { BillingService } from "../billing/billing.service";
 import { CreateDomainDto } from "./dto";
 

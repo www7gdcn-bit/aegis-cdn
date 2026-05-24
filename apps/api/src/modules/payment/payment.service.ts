@@ -1,6 +1,6 @@
 import { BadRequestException, ForbiddenException, Injectable, NotFoundException, OnModuleInit } from "@nestjs/common";
 import { randomBytes } from "crypto";
-import { PrismaService } from "../prisma/prisma.service";
+import { PrismaService } from "../../core/prisma/prisma.service";
 import { BillingService } from "../billing/billing.service";
 import { PaymentRegistry } from "./provider.registry";
 import { GatewayConfig, PaymentStatus } from "./provider.interface";

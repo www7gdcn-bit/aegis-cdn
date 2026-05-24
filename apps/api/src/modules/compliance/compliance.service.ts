@@ -1,7 +1,7 @@
 import { BadRequestException, Injectable, NotFoundException } from "@nestjs/common";
-import { PrismaService } from "../prisma/prisma.service";
-import { RedisService } from "../redis/redis.service";
-import { ConfigCompilerService } from "../protection/config-compiler.service";
+import { PrismaService } from "../../core/prisma/prisma.service";
+import { RedisService } from "../../core/redis/redis.service";
+import { ConfigCompilerService } from "../provisioning/config-compiler.service";
 import { CreateBlockDto, SubmitKycDto } from "./dto";
 
 @Injectable()

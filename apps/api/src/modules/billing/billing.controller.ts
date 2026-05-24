@@ -1,8 +1,8 @@
 import { Body, Controller, Get, Param, ParseIntPipe, Post, UseGuards } from "@nestjs/common";
 import { BillingService } from "./billing.service";
 import { CreateOrderDto } from "./dto";
-import { JwtAuthGuard, AuthUser } from "../common/jwt-auth.guard";
-import { CurrentUser } from "../common/current-user.decorator";
+import { JwtAuthGuard, AuthUser } from "../../core/common/jwt-auth.guard";
+import { CurrentUser } from "../../core/common/current-user.decorator";
 
 @Controller("billing")
 export class BillingController {

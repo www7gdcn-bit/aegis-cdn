@@ -1,9 +1,9 @@
 import { Body, Controller, Delete, Get, Param, ParseIntPipe, Post, UseGuards } from "@nestjs/common";
 import { DomainsService } from "./domains.service";
 import { CreateDomainDto } from "./dto";
-import { JwtAuthGuard, AuthUser } from "../common/jwt-auth.guard";
-import { CurrentUser } from "../common/current-user.decorator";
-import { ConfigCompilerService } from "../protection/config-compiler.service";
+import { JwtAuthGuard, AuthUser } from "../../core/common/jwt-auth.guard";
+import { CurrentUser } from "../../core/common/current-user.decorator";
+import { ConfigCompilerService } from "./config-compiler.service";
 
 @UseGuards(JwtAuthGuard)
 @Controller("domains")
