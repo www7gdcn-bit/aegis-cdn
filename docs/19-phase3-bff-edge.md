@@ -200,13 +200,128 @@ packages/edge-api-sdk/
 | Step 1 | bff-edge 骨架 + SDK placeholder + 5 个分组 controller 占位 + 文档 | 已完成 |
 | Step 2 | SDK 真接 @grpc/grpc-js + admin metadata + UserService.create 真实化 + bff-edge `POST /users` + saas-svc EdgeProvisionService(不接 register) + backfill 脚本 | 已完成(本机最大化自测,Linux 实测顺延到 Phase 3 收尾前 E2E) |
 | Step 3 | register 自动 provisionTenant + PendingEdgeProvision retry queue + cron 30s + provision-status endpoints + backfill --queue + Tenant.edgeUserId 自动绑定 | 已完成 |
-| **Step 4** | **Domains Onboarding(P0):SDK DomainsService 真实化(createBasicHTTPServer/listByUser/findById/remove)+ bff-edge `/domains` 4 endpoints + saas-svc SaasDomain 表 + 5 状态机 + 用户 REST(添加/列表/CNAME/删除/暂停/恢复)** | **本步,已完成** |
-| Step 5 | UsersService 其余 3 个方法(findById/disable/enable);封禁联动(按业务优先级延后) | 待启 |
-| Step 6 | ssl + acme | 待启 |
+| Step 4 | Domains Onboarding:SDK DomainsService + bff-edge `/domains` 4 endpoints + saas-svc SaasDomain 表 + 5 状态机 + 用户 REST(添加/列表/CNAME/删除/暂停/恢复) | 已完成 |
+| **Step 5** | **DNS 验证自动激活:DomainVerificationService(三态)+ Cron 60s + 用户 REST verify-status/verify + Admin REST 跨租户视图** | **已完成** |
+| **Step 6** | **SSL/ACME 自动签发 + 自动续期:SDK SslService 真实化(requestAcmeCert/findCertById/listCertsByUser/removeCert)+ bff-edge `/ssl` 4 endpoints + saas-svc SslService(状态机 none/pending/issued/failed/expired/renewing)+ SslAutoIssueCron 5min + 续期阈值 30 天 + 用户 ssl-status/issue-ssl + admin 强制签发** | **本步,已完成** |
 | Step 7 | blocks 单向同步链路(saas-svc.addBlock → bff-edge → GoEdge ip_list);
             apps/api 残留 reviewDomain / addBlock 整体下线 | 待启 |
 | Step 8 | nodes 只读 + 运营观察前端 | 待启 |
-| Final  | E2E Linux 实测(包含 register + provision + domain + SSL + WAF + CC) | 待启 |
+| Final  | E2E Linux 实测(包含 register + provision + domain + DNS verify + SSL + WAF + CC) | 待启 |
+
+---
+
+## 13. Phase 3 Step 5+6 落地清单(DNS 验证 + SSL/ACME)
+
+### Step 5 — DNS 验证
+
+**SaasDomain 加 3 字段**:`verifiedAt` / `lastVerifyAt` / `lastVerifyError`
+
+**DomainVerificationService**(`dns/promises`):
+- `DNS_RESOLVERS=8.8.8.8,1.1.1.1`(env 可配,默认公共 DNS)
+- 三态 `matched / mismatch / error`,忽略大小写 + 末尾点
+- `verifyAndUpdate(id)`:matched → `status=active,verificationStatus=verified,verifiedAt=now`;
+  其他 → 只更 `lastVerifyAt + lastVerifyError`
+- 仅 `status=dns_pending` 才验证;其他 skip
+
+**Cron** @Cron(EVERY_MINUTE),`DOMAIN_VERIFY_CRON=off` 可关
+
+**用户 REST**:
+- `GET /api/v1/saas/domains/:id/verify-status`
+- `POST /api/v1/saas/domains/:id/verify` — "我已配 DNS,立即检测"
+
+**Admin REST**:
+- `GET /api/v1/saas/admin/domains?status=&verificationStatus=`
+- `GET /api/v1/saas/admin/domains/:id` — 含 kycStatus
+- `POST /api/v1/saas/admin/domains/:id/verify` — 运营强制重跑
+
+### Step 6 — SSL/ACME
+
+**SaasDomain 加 7 字段**:`acmeTaskId / sslCertId @unique / sslIssuedAt / sslExpiresAt /
+sslRenewedAt / lastSslAttemptAt / lastSslError`
+
+**sslStatus 状态机**:
+```
+none / failed ──→ pending ──→ issued ──→ renewing ──→ issued / (issued + lastSslError)
+                                  ↓                       ↓
+                                failed                   issued + 接近 expired → 自动再 renew
+```
+
+**SDK SslService 真实化**:
+| 方法 | 调 GoEdge | 说明 |
+| --- | --- | --- |
+| `requestAcmeCert` | `createACMETask` + `runACMETask` | 同步阻塞,可能 30s-2min;返 `{acmeTaskId, isOk, sslCertId?, error?}` |
+| `findCertById` | `findEnabledSSLCertConfig` | 解 `sslCertJSON` bytes |
+| `listCertsByUser` | `listSSLCerts(userId)` | paged(offset/size) |
+| `removeCert` | `deleteSSLCert` | |
+| `uploadCert` | (Placeholder) | Step 8+ 用户自带证书场景 |
+
+**bff-edge endpoints**(`/internal/edge/ssl/*`,InternalTokenGuard):
+- `POST /ssl/acme/tasks` — 一把签发
+- `GET /ssl/certs?edgeUserId=N` / `GET /ssl/certs/:certId` / `DELETE /ssl/certs/:certId`
+
+**saas-svc SslService**(`modules/domains/`):
+- `issueOrRenew(domainId, {isRenew?})`:
+  - 前置:`status=active`,`Tenant.edgeUserId` 就绪,`EDGE_DEFAULT_ACME_USER_ID` 已配
+  - 写 `sslStatus=pending|renewing` → 调 bff-edge → 成功写 `issued + certId + expiresAt`
+  - 续期失败保留 `issued`(用旧证书过到期);首次签发失败转 `failed`
+- `runAutoIssueBatch(10)`:
+  - 选 1: `status=active && sslStatus in [none,failed]`(按 lastSslAttemptAt 最旧)
+  - 选 2: `status=active && sslStatus=issued && sslExpiresAt ≤ now+30d`(按 expiresAt 最早)
+- 配套 `SslAutoIssueCron` @Cron(EVERY_5_MINUTES),`SSL_AUTO_CRON=off` 可关
+
+**用户 REST**:
+- `GET /api/v1/saas/domains/:id/ssl` — 状态详情(含 `daysToExpire`)
+- `POST /api/v1/saas/domains/:id/issue-ssl` — 立即签发(同步阻塞 ~2min)
+
+**Admin REST**:
+- `POST /api/v1/saas/admin/domains/:id/issue-ssl` — 强制签发(运营介入)
+- `GET /api/v1/saas/admin/domains/:id/ssl` — 完整详情
+
+### LE / ZeroSSL 切换
+
+GoEdge ACMEUser 注册时绑定 ACMEProvider(letsencrypt 或 zerossl)。
+**切换方式**:平台运营在 GoEdge 内建一个 ZeroSSL 的 ACMEUser(`acmeProviderId=2` 之类),
+把 `EDGE_DEFAULT_ACME_USER_ID` 改成它的 id 即可,saas-svc 代码无须改。
+
+第一版 LE 即可:免费、无限量、HTTP-01 兼容性最好。
+
+### 完整业务链(已闭环,代码层)
+
+```
+1. POST /auth/register
+   → JWT(edgeUserId=null)
+2. 异步 scheduleProvision → bff-edge createUser → Tenant.edgeUserId=N
+   (前端轮询 /edge-provision/me 看 status=done)
+3. POST /domains  {"domain":"example.com","originHost":"origin.foo.com"}
+   → saas-svc 生成 cnameTarget = a1b2c3d4.aegiscdn.com
+   → bff-edge createBasicHTTPServer → SaasDomain.status=dns_pending
+4. 用户改 DNS:example.com CNAME → a1b2c3d4.aegiscdn.com
+5. DomainVerificationCron(60s)自动检测 → matched → status=active
+   或用户点 POST /domains/:id/verify 立即检测
+6. SslAutoIssueCron(5min)自动签发 → sslStatus=issued
+   或用户点 POST /domains/:id/issue-ssl 立即签发(同步阻塞 ~2min)
+7. LE 90 天到期前 30 天 SslAutoIssueCron 自动续期
+8. 客户请求 https://example.com → EdgeNode 用 sslCertId 对应的证书握手 → 反代到 origin.foo.com
+```
+
+**注**:第 8 步要求 GoEdge `updateServerHTTPS` 把 `sslCertId` 绑到 server 的 HTTPS 配置上 — 
+本 Step 6 **未做**(只签发了证书,没绑到 server)。下一 Step 或同 Step 收尾补 `bindCertToServer` 调用。
+
+---
+
+## 14. Phase 3 Step 6 未完成的小尾巴(下一步必补)
+
+- **`updateServerHTTPS` 绑定证书到 server**:Step 6 签发了证书,但 GoEdge server 的 HTTPS
+  配置没绑定到 sslCertId,EdgeNode 实际握手仍用默认证书。要补:
+  - SDK `domains.bindCert(serverId, certId)` 方法 → 调 `ServerService.updateServerHTTPS`
+  - saas-svc.SslService.issueOrRenew 成功后 → 调 bff-edge bindCert
+- **DNS-01 挑战**:第一版只 HTTP-01;如客户用 CDN 前置时需 DNS-01。Step 6+ 再加。
+- **ACME 失败 backoff**:当前失败立 fail,下次 cron 立刻再试 → 应加退避(类似 EdgeProvision)。
+- **ZeroSSL ACMEUser 文档化**:运营如何在 GoEdge 注册 ZeroSSL ACMEUser 的具体 RPC 调用。
+
+---
+
+## 15. 关联文档
 
 ---
 

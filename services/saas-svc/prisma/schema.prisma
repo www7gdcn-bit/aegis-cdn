@@ -73,8 +73,8 @@ model SaasDomain {
   cnameTarget         String    @unique
 
   status              String    @default("pending")   // pending|dns_pending|active|paused|failed
-  sslStatus           String    @default("none")      // none|pending|active|failed
-  verificationStatus  String    @default("pending")   // pending|verified|failed(预留给 DNS 检测)
+  sslStatus           String    @default("none")      // none|pending|issued|failed|expired|renewing
+  verificationStatus  String    @default("pending")   // pending|verified|failed
 
   originHost          String?   // 源站 host:port(用户填);Step 4 字段保留,GoEdge 接受协议字符串
 
@@ -87,12 +87,24 @@ model SaasDomain {
   lastVerifyAt        DateTime? // 最近一次跑验证(无论结果)
   lastVerifyError     String?   // 最近一次错误(DNS 查询失败 / 配置不匹配等);成功时清空
 
+  // Phase 3 Step 6 — SSL/ACME 字段
+  // 整套生命周期:none(初) → pending(任务下发中) → issued(成功) → expired/renewing/failed
+  // sslStatus 已在上方 — 这里加配套数据
+  acmeTaskId          Int?      // GoEdge ACMETask.id;runACMETask 后写
+  sslCertId           Int?      @unique // GoEdge SSLCert.id;runACMETask 成功返
+  sslIssuedAt         DateTime? // 首次签发成功时间
+  sslExpiresAt        DateTime? // LE 默认 90 天;距到期 < 30 天触发续期
+  sslRenewedAt        DateTime? // 上次续期时间(非首次)
+  lastSslAttemptAt    DateTime? // 上次尝试 ACME(无论成功/失败)
+  lastSslError        String?   // ACME 失败原因;成功时清空
+
   createdAt           DateTime  @default(now())
   updatedAt           DateTime  @updatedAt
 
   @@index([tenantId])
   @@index([status])
-  @@index([status, lastVerifyAt]) // cron 扫描热路径:status=dns_pending 按 lastVerifyAt 调度
+  @@index([status, lastVerifyAt])    // dns 检测 cron 热路径
+  @@index([status, sslStatus, sslExpiresAt])  // ssl auto-issue/renew cron 热路径
 }
 
 // Phase 3 Step 3:GoEdge user 同步状态机 + retry queue。

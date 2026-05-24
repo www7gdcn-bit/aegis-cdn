@@ -1,6 +1,7 @@
 import { Controller, Get, Param, ParseIntPipe, Post, Query, UseGuards } from "@nestjs/common";
 import { PrismaService } from "../../core/prisma/prisma.service";
 import { DomainVerificationService } from "./domain-verification.service";
+import { SslService } from "./ssl.service";
 import { JwtAuthGuard } from "../../core/common/jwt-auth.guard";
 import { RolesGuard } from "../../core/common/roles.guard";
 import { Roles } from "../../core/common/roles.decorator";
@@ -19,7 +20,11 @@ import { Roles } from "../../core/common/roles.decorator";
 @Roles("admin", "operator")
 @Controller("admin/domains")
 export class AdminDomainsController {
-  constructor(private prisma: PrismaService, private verify: DomainVerificationService) {}
+  constructor(
+    private prisma: PrismaService,
+    private verify: DomainVerificationService,
+    private ssl: SslService,
+  ) {}
 
   // 列表 — 可按 status / verificationStatus 过滤,take=200
   @Get()
@@ -50,5 +55,16 @@ export class AdminDomainsController {
   @Post(":id/verify")
   async forceVerify(@Param("id", ParseIntPipe) id: number) {
     return this.verify.verifyAndUpdate(id);
+  }
+
+  // 管理员手动触发 SSL 签发/续期(覆盖 status 检查;同步阻塞)
+  @Post(":id/issue-ssl")
+  async forceIssueSsl(@Param("id", ParseIntPipe) id: number) {
+    return this.ssl.issueOrRenew(id);
+  }
+
+  @Get(":id/ssl")
+  async sslDetail(@Param("id", ParseIntPipe) id: number) {
+    return this.ssl.getStatus(id);
   }
 }

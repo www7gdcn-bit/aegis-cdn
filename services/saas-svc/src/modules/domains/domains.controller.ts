@@ -4,6 +4,7 @@ import {
 } from "@nestjs/common";
 import { DomainsService } from "./domains.service";
 import { DomainVerificationService } from "./domain-verification.service";
+import { SslService } from "./ssl.service";
 import { AddDomainDto } from "./dto";
 import { JwtAuthGuard, AuthUser } from "../../core/common/jwt-auth.guard";
 import { CurrentUser } from "../../core/common/current-user.decorator";
@@ -12,7 +13,11 @@ import { CurrentUser } from "../../core/common/current-user.decorator";
 @UseGuards(JwtAuthGuard)
 @Controller("domains")
 export class DomainsController {
-  constructor(private domains: DomainsService, private verify: DomainVerificationService) {}
+  constructor(
+    private domains: DomainsService,
+    private verify: DomainVerificationService,
+    private ssl: SslService,
+  ) {}
 
   @Get()
   list(@CurrentUser() u: AuthUser) {
@@ -97,6 +102,35 @@ export class DomainsController {
       verifiedAt: r.record.verifiedAt,
       lastVerifyAt: r.record.lastVerifyAt,
       lastVerifyError: r.record.lastVerifyError,
+    };
+  }
+
+  // Phase 3 Step 6 — SSL/ACME
+  @Get(":id/ssl")
+  async sslStatus(@CurrentUser() u: AuthUser, @Param("id", ParseIntPipe) id: number) {
+    await this.domains.getById(u.tenantId!, id);          // 校验归属
+    return this.ssl.getStatus(id);
+  }
+
+  // 手动触发立即签发(用户点'立即开启 HTTPS' 按钮)
+  // 注:同步阻塞最长 ~2min(LE 实际签发);前端应有 timeout/loading
+  @Post(":id/issue-ssl")
+  async issueSsl(@CurrentUser() u: AuthUser, @Param("id", ParseIntPipe) id: number) {
+    const d = await this.domains.getById(u.tenantId!, id); // 校验归属
+    if (d.status !== "active") {
+      return {
+        skipped: true,
+        reason: `当前 domain status=${d.status},仅 active 可签发`,
+        ssl: await this.ssl.getStatus(id),
+      };
+    }
+    const result = await this.ssl.issueOrRenew(id, { isRenew: false });
+    return {
+      sslStatus: result.sslStatus,
+      sslCertId: result.sslCertId,
+      sslIssuedAt: result.sslIssuedAt,
+      sslExpiresAt: result.sslExpiresAt,
+      lastSslError: result.lastSslError,
     };
   }
 }

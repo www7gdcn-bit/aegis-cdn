@@ -26,6 +26,8 @@ fi
 ENTRY_PROTOS=(
     "service_user.proto"
     "service_server.proto"     # Phase 3 Step 4 — 域名 onboarding
+    "service_acme_task.proto"  # Phase 3 Step 6 — ACME 自动证书签发
+    "service_ssl_cert.proto"   # Phase 3 Step 6 — SSL 证书查询/删除
 )
 
 # 先清空目标(避免上次同步后清单变小残留)

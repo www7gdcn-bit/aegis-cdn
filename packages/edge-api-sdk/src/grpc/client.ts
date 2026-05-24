@@ -5,35 +5,29 @@ import { buildGoEdgeToken } from "./auth";
 import { loadProto } from "./proto-loader";
 import { GrpcUsersService } from "./services/users";
 import { GrpcDomainsService } from "./services/domains";
-import { PlaceholderSslService } from "../services/ssl";
+import { GrpcSslService } from "./services/ssl";
 import { PlaceholderNodesService } from "../services/nodes";
 import { PlaceholderIpListsService } from "../services/ip-lists";
 
 /**
  * GrpcEdgeApiClient — 真实接 GoEdge EdgeAPI gRPC 的 client。
  *
- * Phase 3 Step 2:users.create 真实化
- * Phase 3 Step 4:domains 真实化(create/listByUser/findById/remove)
- *
- * 每次 RPC 调用会:
- *   1. 用 buildGoEdgeToken(secret, nodeId, "admin") 生成新 token(含 timestamp)
- *   2. 注入 metadata { nodeid, token }
- *   3. 走默认 insecure 信道(EdgeAPI 默认非 TLS;生产 TLS 需上游配)
+ * Phase 3 Step 2: users.create
+ * Phase 3 Step 4: domains 全套
+ * Phase 3 Step 6: ssl(requestAcmeCert/findCertById/listCertsByUser/removeCert)
  */
 export class GrpcEdgeApiClient implements EdgeApiClient {
   readonly mode = "grpc" as const;
 
-  // 真实 service:
   readonly users: GrpcUsersService;
   readonly domains: GrpcDomainsService;
+  readonly ssl: GrpcSslService;
 
   // 未实现的继续走 Placeholder(throw NotImplementedError)
-  readonly ssl = new PlaceholderSslService();
   readonly nodes = new PlaceholderNodesService();
   readonly ipLists = new PlaceholderIpListsService();
 
-  private userStub: any;
-  private serverStub: any;
+  private stubs: any[] = [];
 
   constructor(public readonly config: EdgeApiClientConfig) {
     if (!config.addr) throw new EdgeApiError("EdgeApiClientConfig.addr required");
@@ -45,15 +39,22 @@ export class GrpcEdgeApiClient implements EdgeApiClient {
 
     const creds = grpc.credentials.createInsecure();
 
-    // 加载并实例化各 service stub。grpc-js 在底层维护一个共享的 channel 池,
-    // 多个 service 用同 addr+creds 创 stub 时自动复用 TCP/HTTP2 连接。
     const userProto = loadProto("service_user.proto") as any;
-    this.userStub = new userProto.pb.UserService(config.addr, creds);
-    this.users = new GrpcUsersService(this.userStub, () => this.buildMetadata());
+    const userStub = new userProto.pb.UserService(config.addr, creds);
+    this.users = new GrpcUsersService(userStub, () => this.buildMetadata());
+    this.stubs.push(userStub);
 
     const serverProto = loadProto("service_server.proto") as any;
-    this.serverStub = new serverProto.pb.ServerService(config.addr, creds);
-    this.domains = new GrpcDomainsService(this.serverStub, () => this.buildMetadata());
+    const serverStub = new serverProto.pb.ServerService(config.addr, creds);
+    this.domains = new GrpcDomainsService(serverStub, () => this.buildMetadata());
+    this.stubs.push(serverStub);
+
+    const acmeProto = loadProto("service_acme_task.proto") as any;
+    const acmeStub = new acmeProto.pb.ACMETaskService(config.addr, creds);
+    const certProto = loadProto("service_ssl_cert.proto") as any;
+    const certStub = new certProto.pb.SSLCertService(config.addr, creds);
+    this.ssl = new GrpcSslService(acmeStub, certStub, () => this.buildMetadata());
+    this.stubs.push(acmeStub, certStub);
   }
 
   private buildMetadata(): grpc.Metadata {
@@ -64,7 +65,8 @@ export class GrpcEdgeApiClient implements EdgeApiClient {
   }
 
   async close(): Promise<void> {
-    try { (this.userStub as any).close?.(); } catch { /* noop */ }
-    try { (this.serverStub as any).close?.(); } catch { /* noop */ }
+    for (const s of this.stubs) {
+      try { s?.close?.(); } catch { /* noop */ }
+    }
   }
 }
