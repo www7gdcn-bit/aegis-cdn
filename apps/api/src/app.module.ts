@@ -3,9 +3,9 @@ import { JwtModule } from "@nestjs/jwt";
 import { PrismaModule } from "./core/prisma/prisma.module";
 import { RedisModule } from "./core/redis/redis.module";
 import { AuthModule } from "./modules/identity/auth.module";
-import { DomainsModule } from "./modules/provisioning/domains.module";
-import { ProtectionModule } from "./modules/security-policy/protection.module";
-import { StatsModule } from "./modules/analytics/stats.module";
+import { ProvisioningModule } from "./modules/provisioning/provisioning.module";
+import { SecurityPolicyModule } from "./modules/security-policy/security-policy.module";
+import { AnalyticsModule } from "./modules/analytics/analytics.module";
 import { BillingModule } from "./modules/billing/billing.module";
 import { ComplianceModule } from "./modules/compliance/compliance.module";
 import { PaymentModule } from "./modules/payment/payment.module";
@@ -21,9 +21,9 @@ import { HealthController } from "./core/health.controller";
     PrismaModule,
     RedisModule,
     AuthModule,
-    DomainsModule,
-    ProtectionModule,
-    StatsModule,
+    ProvisioningModule,
+    SecurityPolicyModule,
+    AnalyticsModule,
     BillingModule,
     ComplianceModule,
     PaymentModule,

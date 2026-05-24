@@ -15,7 +15,7 @@ const WINDOW = "ts > now() - INTERVAL 1 HOUR";
 const T = "aegis.request_log";
 
 @Injectable()
-export class StatsService {
+export class AnalyticsService {
   constructor(private ch: ClickHouseService) {}
 
   async security(): Promise<StatsPayload> {
