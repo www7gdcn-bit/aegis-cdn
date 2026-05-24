@@ -8,6 +8,7 @@ import { TenantModule } from "./modules/tenant/tenant.module";
 import { PlansModule } from "./modules/plans/plans.module";
 import { SubscriptionsModule } from "./modules/subscriptions/subscriptions.module";
 import { OrdersModule } from "./modules/orders/orders.module";
+import { PaymentModule } from "./modules/payment/payment.module";
 
 @Module({
   imports: [
@@ -23,6 +24,7 @@ import { OrdersModule } from "./modules/orders/orders.module";
     PlansModule,
     SubscriptionsModule,
     OrdersModule,
+    PaymentModule,
   ],
   controllers: [HealthController],
 })
