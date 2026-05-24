@@ -149,6 +149,66 @@ docker compose -f deploy/docker-compose.dev.yml exec edgeapi cat /app/configs/.a
 - setup 报 `multiStatements` → 已被 entrypoint 自动加,若仍报检查 mysql 容器内部连接
 - admin-token.json 不存在 → 看 entrypoint 输出是否有 `isOk:true`;无则 setup 失败
 
+#### 3.1 setup 报 `can not find database config for env 'prod'` — 已修(commit 见 git log)
+
+**根因**:GoEdge 运行时读 `db.yaml` 用 `gopkg.in/yaml.v3` 反序列化到
+`dbs.Config` struct(见 `upstream/EdgeAPI/internal/configs/db_config.go` +
+`iwind/TeaGo/dbs/config.go`),期望**嵌套**格式:
+
+```yaml
+default:
+  db: prod
+  prefix: edge
+
+dbs:
+  prod:
+    driver: mysql
+    dsn: 'edge:PASSWORD@tcp(aegis-mysql:3306)/db_edge?charset=utf8mb4&timeout=30s&parseTime=true&loc=Local'
+    connections:
+      pool: 10
+      max: 100
+      life: 5m
+```
+
+而 `build/configs/db.template.yaml` 内的 `user/password/host/database/boolFields`
+**平面**格式是 GoEdge 安装工具的输入模板,**不是运行时格式**。
+
+`setup.go:LoadDBConfig` 后用 `config.DBs["prod"]` 索引;平面格式
+解出的 `config.DBs` 是空 map → "can not find database config for env 'prod'"。
+
+**已修复**:`deploy/docker/edgeapi-entrypoint.sh` 改为渲染 dbs.Config 嵌套格式,
+marker 文件版本 bump 到 `.aegis-setup-done-v2`。
+
+**Linux 服务器重启 EdgeAPI 步骤**:
+```bash
+# 1. 停 edgeapi
+docker compose -f deploy/docker-compose.dev.yml stop edgeapi
+
+# 2. 清掉旧 configs volume(让 db.yaml 重新渲染 + setup 重跑)
+#    Docker 自动用 project name + volume name 作为实际卷名,常见两种:
+docker volume ls | grep aegis-edgeapi-configs
+#    → 列出的卷名删掉一个或全部
+docker volume rm aegis-dev_aegis-edgeapi-configs 2>/dev/null || true
+docker volume rm deploy_aegis-edgeapi-configs    2>/dev/null || true
+
+# 3. 强制 rebuild + 重起(让 entrypoint 新版生效)
+docker compose -f deploy/docker-compose.dev.yml --env-file deploy/.env up -d --build edgeapi
+
+# 4. 跟踪 logs,看到 "EdgeAPI setup OK. Admin token..." 即成功
+docker compose -f deploy/docker-compose.dev.yml logs -f edgeapi
+```
+
+**验证 db.yaml 格式正确**:
+```bash
+docker compose -f deploy/docker-compose.dev.yml exec edgeapi cat /app/configs/db.yaml
+# 期望含 "default:" + "dbs:" + "  prod:" + "    dsn:"
+```
+
+若仍失败,看 `dsn:` 那行是否完整解析(密码含 `@!#` 等特殊字符时,如果观察到引号嵌套异常,
+改 `deploy/.env` 的 `MYSQL_PASSWORD` 为不含特殊字符的强密码,或手动在 entrypoint 改 DSN 拼接)。
+
+go-sql-driver/mysql DSN 解析从右向左找 `@tcp(`,所以密码含单个 `@` 通常 OK;含 `?` 或 `/` 会出问题。
+
 ---
 
 ## 4. 启动 bff-edge(宿主跑,grpc 模式)

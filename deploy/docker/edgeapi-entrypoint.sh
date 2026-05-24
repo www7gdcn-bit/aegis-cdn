@@ -1,21 +1,34 @@
 #!/usr/bin/env bash
-# deploy/docker/edgeapi-entrypoint.sh — Phase 1 Step 3
+# deploy/docker/edgeapi-entrypoint.sh
 #
 # 职责:
-#   1. 首次启动:渲染 configs/db.yaml(MySQL DSN),跑 edge-api setup 建表 + 建 admin token,
-#      捕获 adminNodeId/adminNodeSecret 写到 /app/configs/.admin-token.json(便于 docker logs/cat 取出)
+#   1. 首次启动:渲染 configs/db.yaml(GoEdge dbs.Config 格式 — env=prod 嵌套),
+#      跑 edge-api setup 建表 + 建 admin token,捕获 adminNodeId/adminNodeSecret
+#      写到 /app/configs/.admin-token.json(便于 docker logs/cat 取出)
 #   2. 后续启动:跳过 setup,直接 exec edge-api start
 #
-# 幂等性:setup 自己检查表已存在/admin token 已存在,可安全重跑;但为避免日志噪声,我们以 marker 文件守门。
+# 幂等性:setup 自己检查表已存在/admin token 已存在,可安全重跑;但为避免日志噪声,
+# 用 marker 文件守门。Marker 含版本号:升级 entrypoint 时 bump 让旧实例自动重跑 setup
+# (db.yaml 格式变化等场景必需,Phase 3 Final E2E 期间从 v1 → v2)。
+#
+# 关键修复(2026-05-25):
+#   GoEdge 运行时读 db.yaml 用 gopkg.in/yaml.v3 反序列化到 dbs.Config struct
+#   (见 upstream/EdgeAPI/internal/configs/db_config.go + iwind/TeaGo/dbs/config.go),
+#   期望嵌套格式 { default: {db: prod}, dbs: {prod: {driver, dsn, ...}} }。
+#   build/configs/db.template.yaml 内的 user/password/host/database/boolFields 平面格式
+#   是 GoEdge **install 工具的输入模板**,**不是运行时格式** — 必须由 entrypoint 渲染为
+#   dbs.Config 嵌套格式后,setup 命令的 LoadDBConfig + config.DBs[Tea.Env="prod"] 才能解析到。
 
 set -euo pipefail
 
 CONFIGS=/app/configs
 TEMPLATES=/app/configs.template
-MARKER=$CONFIGS/.aegis-setup-done
+# v2:db.yaml 格式从平面改为 dbs.Config 嵌套 — 旧 v1 marker 失效,setup 重跑
+MARKER=$CONFIGS/.aegis-setup-done-v2
 
 # ─────────────────────────────────────────
-# 1. 首次:把模板搬到持久卷(若卷里空)
+# 1. 首次:把模板搬到持久卷(若卷里没有 api.template.yaml)
+#    注:db.template.yaml 也会被搬,但下面会被我们渲染的 db.yaml 覆盖 — 这是正确行为
 # ─────────────────────────────────────────
 if [ ! -f "$CONFIGS/api.template.yaml" ]; then
     echo "==> first run: copy config templates to $CONFIGS"
@@ -23,14 +36,29 @@ if [ ! -f "$CONFIGS/api.template.yaml" ]; then
 fi
 
 # ─────────────────────────────────────────
-# 2. 渲染 db.yaml(每次都覆盖,保证密码/host 跟 env 一致)
+# 2. 渲染 db.yaml(每次都覆盖) — dbs.Config 嵌套格式
 # ─────────────────────────────────────────
+# 转义密码中的单引号(YAML single-quoted 里 ' 写作 '')
+ESC_PASS="${AEGIS_MYSQL_PASSWORD//\'/\'\'}"
+
+# DSN 用 go-sql-driver/mysql 格式: user:pass@tcp(host:port)/db?params
+# 注:password 含 @ 时 go-sql-driver 解析正常(从右向左找 @tcp(),倒推 user:pass)
+# multiStatements:setup.go 会自动追加,这里不必预置
+DSN="${AEGIS_MYSQL_USER}:${AEGIS_MYSQL_PASSWORD}@tcp(${AEGIS_MYSQL_HOST}:${AEGIS_MYSQL_PORT})/${AEGIS_MYSQL_DATABASE}?charset=utf8mb4&timeout=30s&parseTime=true&loc=Local"
+
 cat > "$CONFIGS/db.yaml" <<EOF
-user: "${AEGIS_MYSQL_USER}"
-password: "${AEGIS_MYSQL_PASSWORD}"
-host: "${AEGIS_MYSQL_HOST}:${AEGIS_MYSQL_PORT}"
-database: "${AEGIS_MYSQL_DATABASE}"
-boolFields: [ "uamIsOn", "followPort", "requestHostExcludingPort", "autoRemoteStart", "autoInstallNftables", "enableIPLists", "detectAgents", "checkingPorts", "enableRecordHealthCheck", "offlineIsNotified", "http2Enabled", "http3Enabled", "enableHTTP2", "retry50X", "retry40X", "autoSystemTuning", "disableDefaultDB", "autoTrimDisks", "enableGlobalPages", "ignoreLocal", "ignoreSearchEngine" ]
+default:
+  db: prod
+  prefix: edge
+
+dbs:
+  prod:
+    driver: mysql
+    dsn: '${DSN//\'/\'\'}'
+    connections:
+      pool: 10
+      max: 100
+      life: 5m
 EOF
 
 # ─────────────────────────────────────────
@@ -38,16 +66,23 @@ EOF
 # ─────────────────────────────────────────
 if [ ! -f "$MARKER" ]; then
     echo "==> running edge-api setup ..."
+    echo "    DB host=${AEGIS_MYSQL_HOST}:${AEGIS_MYSQL_PORT} user=${AEGIS_MYSQL_USER} db=${AEGIS_MYSQL_DATABASE}"
+    echo "    API node proto=${EDGE_API_PROTOCOL} host=${EDGE_API_HOST} port=${EDGE_API_PORT}"
+
     SETUP_OUT=$(/app/bin/edge-api setup \
         -api-node-protocol="${EDGE_API_PROTOCOL}" \
         -api-node-host="${EDGE_API_HOST}" \
         -api-node-port="${EDGE_API_PORT}" 2>&1 || true)
 
     echo "$SETUP_OUT"
-    echo "$SETUP_OUT" | grep -q '"isOk":true' || {
+    if ! echo "$SETUP_OUT" | grep -q '"isOk":true'; then
         echo "[ERROR] edge-api setup failed. Check output above." >&2
+        echo "[HINT] 常见原因:" >&2
+        echo "  - db.yaml 格式不对 → 看 /app/configs/db.yaml 是否含 'dbs:' + 'prod:' 嵌套" >&2
+        echo "  - MySQL 连接 → 容器内 'mysqladmin ping -h ${AEGIS_MYSQL_HOST}'" >&2
+        echo "  - 用户权限 → '${AEGIS_MYSQL_USER}' 需有 db_edge 的全部权限" >&2
         exit 1
-    }
+    fi
 
     # 提取 admin token JSON,落地到 configs 供运维 cat 取
     echo "$SETUP_OUT" | grep -oE '\{.*"isOk":true.*\}' > "$CONFIGS/.admin-token.json" || true
@@ -55,7 +90,7 @@ if [ ! -f "$MARKER" ]; then
 
     echo
     echo "═══════════════════════════════════════════════════════════"
-    echo "  EdgeAPI setup OK. Admin token(用于 bff-edge / EdgeAdmin 登录):"
+    echo "  EdgeAPI setup OK. Admin token(用于 bff-edge 鉴权):"
     echo "    docker compose -f deploy/docker-compose.dev.yml exec edgeapi cat /app/configs/.admin-token.json"
     echo "═══════════════════════════════════════════════════════════"
 fi
