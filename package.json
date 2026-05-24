@@ -5,7 +5,8 @@
   "description": "AegisCDN — 商用级高防 CDN / DDoS 防护 SaaS 平台",
   "workspaces": [
     "apps/*",
-    "packages/*"
+    "packages/*",
+    "services/*"
   ],
   "scripts": {
     "dev": "npm run dev -w @aegis/web",
