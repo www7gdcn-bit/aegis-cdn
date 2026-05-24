@@ -1,0 +1,3 @@
+# 跨平台行尾统一为 LF(Windows/macOS/Linux 一致)。
+# text=auto 让 git 自动判定文本/二进制;eol=lf 对所有文本文件强制 LF。
+* text=auto eol=lf
