@@ -9,6 +9,7 @@ import { PlansModule } from "./modules/plans/plans.module";
 import { SubscriptionsModule } from "./modules/subscriptions/subscriptions.module";
 import { OrdersModule } from "./modules/orders/orders.module";
 import { PaymentModule } from "./modules/payment/payment.module";
+import { KycModule } from "./modules/kyc/kyc.module";
 
 @Module({
   imports: [
@@ -25,6 +26,7 @@ import { PaymentModule } from "./modules/payment/payment.module";
     SubscriptionsModule,
     OrdersModule,
     PaymentModule,
+    KycModule,
   ],
   controllers: [HealthController],
 })
