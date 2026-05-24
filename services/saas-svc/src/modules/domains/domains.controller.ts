@@ -1,7 +1,9 @@
 import {
-  Body, Controller, Delete, Get, Param, ParseIntPipe, Post, UseGuards,
+  Body, Controller, Delete, ForbiddenException, Get, NotFoundException,
+  Param, ParseIntPipe, Post, UseGuards,
 } from "@nestjs/common";
 import { DomainsService } from "./domains.service";
+import { DomainVerificationService } from "./domain-verification.service";
 import { AddDomainDto } from "./dto";
 import { JwtAuthGuard, AuthUser } from "../../core/common/jwt-auth.guard";
 import { CurrentUser } from "../../core/common/current-user.decorator";
@@ -10,7 +12,7 @@ import { CurrentUser } from "../../core/common/current-user.decorator";
 @UseGuards(JwtAuthGuard)
 @Controller("domains")
 export class DomainsController {
-  constructor(private domains: DomainsService) {}
+  constructor(private domains: DomainsService, private verify: DomainVerificationService) {}
 
   @Get()
   list(@CurrentUser() u: AuthUser) {
@@ -46,5 +48,55 @@ export class DomainsController {
   @Post(":id/resume")
   resume(@CurrentUser() u: AuthUser, @Param("id", ParseIntPipe) id: number) {
     return this.domains.resume(u.tenantId!, id);
+  }
+
+  // Phase 3 Step 5 — DNS 验证状态查询
+  @Get(":id/verify-status")
+  async verifyStatus(@CurrentUser() u: AuthUser, @Param("id", ParseIntPipe) id: number) {
+    const d = await this.domains.getById(u.tenantId!, id);
+    return {
+      domain: d.domain,
+      status: d.status,
+      verificationStatus: d.verificationStatus,
+      cnameTarget: d.cnameTarget,
+      verified: d.verificationStatus === "verified",
+      verifiedAt: d.verifiedAt,
+      lastVerifyAt: d.lastVerifyAt,
+      lastVerifyError: d.lastVerifyError,
+    };
+  }
+
+  // 手动触发一次 DNS 检测 — "我已完成解析,立即检测"
+  @Post(":id/verify")
+  async verifyNow(@CurrentUser() u: AuthUser, @Param("id", ParseIntPipe) id: number) {
+    // 校验归属
+    const d = await this.domains.getById(u.tenantId!, id);
+    if (d.status !== "dns_pending") {
+      // 不阻止 — 返回当前状态让前端处理
+      return {
+        skipped: true,
+        reason: `当前 status=${d.status},仅 dns_pending 状态需检测`,
+        domain: d.domain,
+        status: d.status,
+        verificationStatus: d.verificationStatus,
+      };
+    }
+    const r = await this.verify.verifyAndUpdate(id);
+    return {
+      domain: d.domain,
+      ...(r.outcome === "skipped"
+        ? { outcome: "skipped" }
+        : {
+            outcome: r.outcome.result,
+            ...(r.outcome.result !== "matched" ? { reason: r.outcome.reason } : {}),
+            ...(r.outcome.result !== "error" ? { resolvedCnames: r.outcome.resolvedCnames } : {}),
+          }),
+      status: r.record.status,
+      verificationStatus: r.record.verificationStatus,
+      verified: r.record.verificationStatus === "verified",
+      verifiedAt: r.record.verifiedAt,
+      lastVerifyAt: r.record.lastVerifyAt,
+      lastVerifyError: r.record.lastVerifyError,
+    };
   }
 }

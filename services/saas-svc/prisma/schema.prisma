@@ -82,11 +82,17 @@ model SaasDomain {
   lastErrorAt         DateTime?
   edgeSyncedAt        DateTime? // 最近一次成功同步到 GoEdge 的时间
 
+  // Phase 3 Step 5 — DNS 验证字段
+  verifiedAt          DateTime? // CNAME 解析首次匹配的时间(status 切到 active 那一刻)
+  lastVerifyAt        DateTime? // 最近一次跑验证(无论结果)
+  lastVerifyError     String?   // 最近一次错误(DNS 查询失败 / 配置不匹配等);成功时清空
+
   createdAt           DateTime  @default(now())
   updatedAt           DateTime  @updatedAt
 
   @@index([tenantId])
   @@index([status])
+  @@index([status, lastVerifyAt]) // cron 扫描热路径:status=dns_pending 按 lastVerifyAt 调度
 }
 
 // Phase 3 Step 3:GoEdge user 同步状态机 + retry queue。
