@@ -12,6 +12,7 @@ import { PaymentModule } from "./modules/payment/payment.module";
 import { KycModule } from "./modules/kyc/kyc.module";
 import { InternalModule } from "./modules/internal/internal.module";
 import { EdgeProvisionModule } from "./modules/edge-provision/edge-provision.module";
+import { DomainsModule } from "./modules/domains/domains.module";
 
 @Module({
   imports: [
@@ -31,6 +32,7 @@ import { EdgeProvisionModule } from "./modules/edge-provision/edge-provision.mod
     KycModule,
     InternalModule,
     EdgeProvisionModule,
+    DomainsModule,
   ],
   controllers: [HealthController],
 })

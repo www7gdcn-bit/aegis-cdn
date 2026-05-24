@@ -199,13 +199,14 @@ packages/edge-api-sdk/
 | --- | --- | --- |
 | Step 1 | bff-edge 骨架 + SDK placeholder + 5 个分组 controller 占位 + 文档 | 已完成 |
 | Step 2 | SDK 真接 @grpc/grpc-js + admin metadata + UserService.create 真实化 + bff-edge `POST /users` + saas-svc EdgeProvisionService(不接 register) + backfill 脚本 | 已完成(本机最大化自测,Linux 实测顺延到 Phase 3 收尾前 E2E) |
-| **Step 3** | **register 自动 provisionTenant(异步,fire-and-forget) + PendingEdgeProvision retry queue + cron 30s + provision-status endpoints + backfill --queue + Tenant.edgeUserId 真正自动绑定** | **本步,已完成** |
-| Step 4 | UsersService 其余 3 个方法(findById/disable/enable);封禁联动 | 待启 |
-| Step 5 | domains.create 真实化(含 quota 前置 + sync-proto.sh 加 service_server.proto) | 待启 |
+| Step 3 | register 自动 provisionTenant + PendingEdgeProvision retry queue + cron 30s + provision-status endpoints + backfill --queue + Tenant.edgeUserId 自动绑定 | 已完成 |
+| **Step 4** | **Domains Onboarding(P0):SDK DomainsService 真实化(createBasicHTTPServer/listByUser/findById/remove)+ bff-edge `/domains` 4 endpoints + saas-svc SaasDomain 表 + 5 状态机 + 用户 REST(添加/列表/CNAME/删除/暂停/恢复)** | **本步,已完成** |
+| Step 5 | UsersService 其余 3 个方法(findById/disable/enable);封禁联动(按业务优先级延后) | 待启 |
 | Step 6 | ssl + acme | 待启 |
 | Step 7 | blocks 单向同步链路(saas-svc.addBlock → bff-edge → GoEdge ip_list);
             apps/api 残留 reviewDomain / addBlock 整体下线 | 待启 |
 | Step 8 | nodes 只读 + 运营观察前端 | 待启 |
+| Final  | E2E Linux 实测(包含 register + provision + domain + SSL + WAF + CC) | 待启 |
 
 ---
 
@@ -359,7 +360,101 @@ return this.sign({...});  // 立刻返回,不阻塞
 
 ---
 
-## 11. 关联文档
+## 11. Phase 3 Step 4 落地清单(Domains Onboarding,2026-05-24)
+
+### SDK 真实化
+
+- `proto/` 新增 8 个文件(`service_server.proto` 链路依赖)— sync-proto.sh ENTRY_PROTOS 加 `service_server.proto` 重跑
+- `src/grpc/services/domains.ts` 新建 `GrpcDomainsService`:
+  - `create`  → `ServerService.createBasicHTTPServer(domains[], originAddrs[], enableWebsocket?)` 一次建好 server+web+reverseProxy
+  - `listByUser` → `findAllUserServers(userId)`
+  - `findById`  → `findEnabledUserServerBasic(serverId)`(NOT_FOUND 返 null)
+  - `remove`    → `deleteServer(serverId)`
+- `src/grpc/client.ts` 加 `serverStub`(独立 stub,与 `userStub` 共享底层 channel)
+- `src/types.ts`:`CreateDomainInput` 改字段:`serverNames: string[]` + `originAddrs: string[]` +
+  `clusterId?` + `enableWebsocket?`,与 GoEdge createBasicHTTPServer 字段对齐
+
+### bff-edge 4 endpoints
+
+| 路径 | 守 | 调 SDK |
+| --- | --- | --- |
+| POST `/internal/edge/domains` | InternalToken | `domains.create` |
+| GET `/internal/edge/domains?edgeUserId=N` | InternalToken | `domains.listByUser` |
+| GET `/internal/edge/domains/:serverId` | InternalToken | `domains.findById` |
+| DELETE `/internal/edge/domains/:serverId` | InternalToken | `domains.remove` |
+
+错误码契约:
+- 502 `EDGE_API_NOT_READY` / `EDGE_API_UNREACHABLE`
+- 401 `EDGE_API_AUTH_FAILED`
+- 409 `EDGE_DOMAIN_CONFLICT`(ALREADY_EXISTS)
+- 400 `EDGE_DOMAIN_INVALID`(INVALID_ARGUMENT)
+- 404 `EDGE_DOMAIN_NOT_FOUND`(findById)
+- 500 `EDGE_API_ERROR`
+
+### saas-svc 新增
+
+**新增 SaasDomain 表**:
+```
+SaasDomain
+  id / tenantId @relation Tenant / domain @unique / edgeDomainId @unique
+  cnameTarget @unique(<hex>.aegiscdn.com,EDGE_CNAME_SUFFIX 可配)
+  status     pending|dns_pending|active|paused|failed
+  sslStatus  none|pending|active|failed   (Step 6+ 才用)
+  verificationStatus pending|verified|failed (DNS 检测预留)
+  originHost / lastError / lastErrorAt / edgeSyncedAt
+  @@index([tenantId]) @@index([status])
+```
+
+**DomainsService**(`modules/domains/`):
+- `add(tenantId, {domain, originHost?})`:
+  - 校验 domain 全局唯一(跨租户)
+  - 必须 `Tenant.edgeUserId` 已就绪(否则 400 提示等 provision)
+  - 生成 `cnameTarget=<hex>.aegiscdn.com` + 入库 status=pending
+  - 调 bff-edge,成功 → status=dns_pending + 写 edgeDomainId
+  - 失败 → status=failed + 透传 bff-edge code/message
+- `list/getById/getCname/remove/pause/resume`
+
+**用户 REST**(`/api/v1/saas/domains/*`,JwtAuthGuard):
+| Method | Path | 用途 |
+| --- | --- | --- |
+| GET | `/domains` | 列表 |
+| POST | `/domains` | 添加(返回完整记录含 cnameTarget) |
+| GET | `/domains/:id` | 详情 |
+| GET | `/domains/:id/cname` | CNAME 解析指引(独立端点,前端 UI 复用) |
+| DELETE | `/domains/:id` | 删除(级联调 bff-edge DELETE) |
+| POST | `/domains/:id/pause` | 暂停(本地状态;Step 6+ 才推 GoEdge) |
+| POST | `/domains/:id/resume` | 恢复 |
+
+### 状态机
+
+```
+[用户 POST]
+   ↓
+pending ───┬──→ dns_pending ───(后续 DNS 检测/SSL/CC...)──→ active
+           │                                                  │
+           ├──→ failed (bff-edge/grpc 错)              ┌──[用户 pause]
+           │                                          ↓
+           └──[原子事务回滚]                        paused ←─[resume]
+```
+
+### 完整业务链(用户视角)
+
+```
+1. POST /api/v1/saas/auth/register
+   → 拿 JWT(edgeUserId=null)
+2. 轮询 GET /api/v1/saas/edge-provision/me
+   → status=done + edgeUserId 就绪
+3. POST /api/v1/saas/domains  {"domain":"example.com","originHost":"origin.foo.com"}
+   → 返 {id, cnameTarget:"a1b2c3d4.aegiscdn.com", status:"dns_pending", edgeDomainId}
+4. 在自己的 DNS 把 example.com 配 CNAME → a1b2c3d4.aegiscdn.com
+5. GoEdge EdgeNode 接到客户请求 → 命中 server → 反代到 origin.foo.com
+```
+
+至此 SaaS 第一条业务链路打通(完整链路 Linux E2E 实测仍待统一安排)。
+
+---
+
+## 12. 关联文档
 
 - [[docs/15-goedge-secondary-development-plan.md]] §9 Phase 3 范围定义
 - [[docs/17-saas-svc-接口规范.md]] §1.2 bff-edge 职责边界、§4 内部接口契约

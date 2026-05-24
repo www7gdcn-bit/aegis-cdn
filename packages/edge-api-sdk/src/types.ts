@@ -26,14 +26,17 @@ export interface UserSummary {
 }
 
 export interface CreateDomainInput {
-  userId: EdgeUserId;
-  serverName: string;      // 接入域名(host)
-  clusterId?: EdgeClusterId;
+  edgeUserId: EdgeUserId;
+  serverNames: string[];   // 主域名 + 别名(含平台分配的 cnameTarget)
+  originAddrs: string[];   // 源站地址,每个带协议;例 ["http://192.168.1.10:80"]
+  clusterId?: EdgeClusterId;  // 0/缺省 = GoEdge 默认集群
+  enableWebsocket?: boolean;
 }
 
 export interface DomainSummary {
   serverId: EdgeServerId;
-  serverName: string;
+  name: string;            // GoEdge server.name(我们传的主域名)
+  serverNames?: string[];  // 全部接入域名列表
   isOn: boolean;
   clusterId?: EdgeClusterId;
 }

@@ -25,6 +25,7 @@ fi
 # 入口 proto(后续步骤新增):
 ENTRY_PROTOS=(
     "service_user.proto"
+    "service_server.proto"     # Phase 3 Step 4 — 域名 onboarding
 )
 
 # 先清空目标(避免上次同步后清单变小残留)

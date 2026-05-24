@@ -39,9 +39,54 @@ model Tenant {
   subscription Subscription?
   orders       Order[]
   edgeProvision PendingEdgeProvision?
+  domains      SaasDomain[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+}
+
+// Phase 3 Step 4 — SaaS 域名 onboarding 表(saas 侧权威源)。
+//
+// 一行 = 客户接入的一个域名。GoEdge 侧对应的 server 通过 edgeDomainId 关联。
+//
+// 状态机:
+//   pending      初建,正在调 bff-edge 写 GoEdge,可重试
+//   dns_pending  GoEdge 创建成功,等用户在自己的 DNS 配 CNAME → cnameTarget
+//   active       CNAME 已生效,流量通(Step 4 阶段简化:管理员手动或定时 DNS 检测后置位)
+//   paused       用户主动暂停 / 平台暂停(欠费等)
+//   failed       GoEdge 创建失败永久态(需运营介入或删除重试)
+//
+// sslStatus 与 verificationStatus 留字段不深入实现(Step 6+ SSL/ACME 才动)。
+model SaasDomain {
+  id                  Int       @id @default(autoincrement())
+  tenantId            Int
+  tenant              Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  // 用户接入的域名(主域名);唯一,跨租户也唯一(避免不同租户接同一域名)
+  domain              String    @unique
+
+  // GoEdge ServerService 返回的 serverId;成功后写入
+  edgeDomainId        Int?      @unique
+
+  // 平台分配的 CNAME 目标 — 客户应把 domain 的 CNAME 解析到这里
+  // 格式:<8 位 hex>.<EDGE_CNAME_SUFFIX>(默认 aegiscdn.com)
+  cnameTarget         String    @unique
+
+  status              String    @default("pending")   // pending|dns_pending|active|paused|failed
+  sslStatus           String    @default("none")      // none|pending|active|failed
+  verificationStatus  String    @default("pending")   // pending|verified|failed(预留给 DNS 检测)
+
+  originHost          String?   // 源站 host:port(用户填);Step 4 字段保留,GoEdge 接受协议字符串
+
+  lastError           String?
+  lastErrorAt         DateTime?
+  edgeSyncedAt        DateTime? // 最近一次成功同步到 GoEdge 的时间
+
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+
+  @@index([tenantId])
+  @@index([status])
 }
 
 // Phase 3 Step 3:GoEdge user 同步状态机 + retry queue。

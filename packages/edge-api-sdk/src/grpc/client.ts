@@ -4,7 +4,7 @@ import { EdgeApiError } from "../errors";
 import { buildGoEdgeToken } from "./auth";
 import { loadProto } from "./proto-loader";
 import { GrpcUsersService } from "./services/users";
-import { PlaceholderDomainsService } from "../services/domains";
+import { GrpcDomainsService } from "./services/domains";
 import { PlaceholderSslService } from "../services/ssl";
 import { PlaceholderNodesService } from "../services/nodes";
 import { PlaceholderIpListsService } from "../services/ip-lists";
@@ -12,9 +12,8 @@ import { PlaceholderIpListsService } from "../services/ip-lists";
 /**
  * GrpcEdgeApiClient — 真实接 GoEdge EdgeAPI gRPC 的 client。
  *
- * Phase 3 Step 2 范围:
- *   - users:  GrpcUsersService(create 真实化;其他方法仍 throw NotImplementedError)
- *   - domains/ssl/nodes/ipLists:仍是 Placeholder(下个 Step 替换)
+ * Phase 3 Step 2:users.create 真实化
+ * Phase 3 Step 4:domains 真实化(create/listByUser/findById/remove)
  *
  * 每次 RPC 调用会:
  *   1. 用 buildGoEdgeToken(secret, nodeId, "admin") 生成新 token(含 timestamp)
@@ -26,14 +25,15 @@ export class GrpcEdgeApiClient implements EdgeApiClient {
 
   // 真实 service:
   readonly users: GrpcUsersService;
+  readonly domains: GrpcDomainsService;
 
   // 未实现的继续走 Placeholder(throw NotImplementedError)
-  readonly domains = new PlaceholderDomainsService();
   readonly ssl = new PlaceholderSslService();
   readonly nodes = new PlaceholderNodesService();
   readonly ipLists = new PlaceholderIpListsService();
 
-  private channel: grpc.Client;
+  private userStub: any;
+  private serverStub: any;
 
   constructor(public readonly config: EdgeApiClientConfig) {
     if (!config.addr) throw new EdgeApiError("EdgeApiClientConfig.addr required");
@@ -43,14 +43,17 @@ export class GrpcEdgeApiClient implements EdgeApiClient {
       );
     }
 
-    // 加载 UserService(proto-loader 自动 follow imports)
-    const userProto = loadProto("service_user.proto") as any;
-    const UserServiceCtor = userProto.pb.UserService;
+    const creds = grpc.credentials.createInsecure();
 
-    // 单一 channel 复用(grpc-js 自带连接复用);后续 service 共享
-    const stub = new UserServiceCtor(config.addr, grpc.credentials.createInsecure());
-    this.channel = stub;
-    this.users = new GrpcUsersService(stub, () => this.buildMetadata());
+    // 加载并实例化各 service stub。grpc-js 在底层维护一个共享的 channel 池,
+    // 多个 service 用同 addr+creds 创 stub 时自动复用 TCP/HTTP2 连接。
+    const userProto = loadProto("service_user.proto") as any;
+    this.userStub = new userProto.pb.UserService(config.addr, creds);
+    this.users = new GrpcUsersService(this.userStub, () => this.buildMetadata());
+
+    const serverProto = loadProto("service_server.proto") as any;
+    this.serverStub = new serverProto.pb.ServerService(config.addr, creds);
+    this.domains = new GrpcDomainsService(this.serverStub, () => this.buildMetadata());
   }
 
   private buildMetadata(): grpc.Metadata {
@@ -61,6 +64,7 @@ export class GrpcEdgeApiClient implements EdgeApiClient {
   }
 
   async close(): Promise<void> {
-    try { (this.channel as any).close?.(); } catch { /* noop */ }
+    try { (this.userStub as any).close?.(); } catch { /* noop */ }
+    try { (this.serverStub as any).close?.(); } catch { /* noop */ }
   }
 }
