@@ -301,9 +301,51 @@ docker compose -f deploy/docker-compose.dev.yml exec edgeapi netstat -tlnp 2>/de
 
 ---
 
-## 4. 启动 bff-edge(宿主跑,grpc 模式)
+## 4. 启动 bff-edge
 
-新开终端,把 admin token 填进 env 跑 bff-edge:
+### 4.A 容器化(Phase 3 Step 2.5 起,推荐)
+
+1. **把 admin token 填进 deploy/.env**(从 §3 末尾 admin-token.json 取):
+   ```bash
+   # 编辑 deploy/.env,加(或修改)这两行:
+   EDGE_API_ADMIN_NODE_ID=<adminNodeId from admin-token.json>
+   EDGE_API_ADMIN_NODE_SECRET=<adminNodeSecret>
+   ```
+
+2. **build + 起 bff-edge 容器**(--profile bff 才启,默认 up 不会动它):
+   ```bash
+   docker compose -f deploy/docker-compose.dev.yml --env-file deploy/.env \
+       --profile bff up -d --build bff-edge
+   ```
+
+3. **跟启动日志**:
+   ```bash
+   docker compose -f deploy/docker-compose.dev.yml logs -f bff-edge
+   # 期望看到:
+   #   [Nest] LOG [EdgeApiClient] EdgeApiClient mode=grpc addr=edgeapi:8003 adminConfigured=true
+   #   [Nest] LOG [RoutesResolver] UsersController {/internal/edge/users}:
+   #   ...
+   #   [bff-edge] listening on http://0.0.0.0:4002/internal/edge
+   ```
+
+4. **验证容器健康**:
+   ```bash
+   docker inspect aegis-bff-edge --format '{{.State.Status}} {{.State.Health.Status}}'
+   # 期望:running healthy(start_period=30s 后)
+
+   # 公开 /health 应返 200(从宿主 127.0.0.1 探活)
+   curl -fsS http://127.0.0.1:4002/health | jq .
+   # 期望:
+   #   {
+   #     "ok": true,
+   #     "service": "bff-edge",
+   #     "edgeApi": { "addr": "edgeapi:8003", "mode": "grpc", "adminConfigured": true }
+   #   }
+   ```
+
+### 4.B 宿主跑(dev 调试用,本地改代码即时生效)
+
+新开终端跑 bff-edge:
 
 ```bash
 cd aegis-cdn
@@ -320,14 +362,24 @@ PORT=4002 \
   node services/bff-edge/dist/main.js
 ```
 
-**预期启动日志**:
+**预期启动日志(A/B 通用)**:
 ```
-[Nest] LOG [EdgeApiClient] EdgeApiClient mode=grpc addr=127.0.0.1:8003 adminConfigured=true
+[Nest] LOG [EdgeApiClient] EdgeApiClient mode=grpc addr=... adminConfigured=true
 ...
 [Nest] LOG [RoutesResolver] UsersController {/internal/edge/users}:
 ...
 [bff-edge] listening on http://0.0.0.0:4002/internal/edge
 ```
+
+### 4.C bff-edge 容器排障
+
+| 现象 | 可能原因 | 排查 |
+| --- | --- | --- |
+| 容器 `Exited (1)` 启动即崩 | env `EDGE_API_ADMIN_NODE_ID/SECRET` 没填 | `docker compose logs bff-edge`,看是否报 `GrpcEdgeApiClient 需要 adminNodeId + adminNodeSecret`;若是,编辑 deploy/.env 填上,`up -d` 重起 |
+| /health 报 `mode: placeholder` 而非 grpc | env 拼写错 / 未传到容器 | `docker compose exec bff-edge env \| grep EDGE_API` 看实际容器 env;`EDGE_API_MODE` 必须是 `grpc`,且 admin 两个 env 都非空 |
+| build 阶段 npm install 卡住 | 容器内国内网络下载 npm/grpc-js prebuilt 慢 | Dockerfile 增加 `RUN npm config set registry https://registry.npmmirror.com` 或本地代理;或 `--build-arg` 注入 |
+| `/internal/edge/users` 502 EDGE_API_NOT_READY | SDK fall back placeholder | 同上 admin env 缺失 |
+| `/internal/edge/users` 502 EDGE_API_UNREACHABLE | bff-edge 连不上 edgeapi:8003 | `docker compose exec bff-edge nc -zv edgeapi 8003`;如不通查 aegis-dev 网络 + edgeapi listener |
 
 ---
 
