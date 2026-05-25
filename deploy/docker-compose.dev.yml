@@ -227,19 +227,24 @@ services:
       - "127.0.0.1:${SAAS_SVC_PORT:-4001}:4001"
 
   # ──────────────────────────────────────────────────────────────
-  # 7. services/bff-edge(Phase 3 EdgeAPI 桥接层占位)
+  # 7. services/bff-edge(Phase 3 Step 2.5 起真实启动)
   #
-  #    用 profile "bff" 隔离;Phase 3 阶段建议宿主 npm run start:dev -w @aegis/bff-edge。
-  #    Phase 3 Step 2 起接真实 EdgeAPI gRPC 后,Dockerfile 与本 service 一并定稿。
+  #    profile "bff" 隔离:`docker compose --profile bff up -d --build bff-edge`
+  #    依赖 edgeapi healthcheck 通过后才起(否则 gRPC 连不上 EdgeAPI)
+  #
+  #    EDGE_API_ADMIN_NODE_ID/SECRET 必须从 deploy/.env 注入(由 edgeapi setup 生成):
+  #      docker compose exec edgeapi cat /app/configs/.admin-token.json
+  #    取出 adminNodeId / adminNodeSecret,填进 deploy/.env 对应字段。
+  #    缺失时 compose up 直接报错拒启,而非静默回落 placeholder。
   # ──────────────────────────────────────────────────────────────
   bff-edge:
     profiles: ["bff"]
     container_name: aegis-bff-edge
     restart: unless-stopped
     networks: [aegis-dev]
-    image: node:20-alpine
-    working_dir: /app
-    command: ["sh", "-c", "echo 'bff-edge 容器化待 Phase 3 Step 2 落 Dockerfile;Phase 3 Step 1 在宿主 npm run start:dev -w @aegis/bff-edge' && sleep infinity"]
+    build:
+      context: ..
+      dockerfile: deploy/docker/bff-edge.Dockerfile
     depends_on:
       edgeapi:
         condition: service_healthy
@@ -248,9 +253,18 @@ services:
       JWT_SECRET:                 ${AEGIS_JWT_SECRET:?AEGIS_JWT_SECRET required}
       AEGIS_INTERNAL_SECRET:      ${AEGIS_INTERNAL_SECRET:?AEGIS_INTERNAL_SECRET required}
       SAAS_SVC_INTERNAL_URL:      http://saas-svc:4001
+      # gRPC 模式 + 内部 DNS 指 edgeapi 容器(同 aegis-dev 网络)
+      EDGE_API_MODE:              grpc
       EDGE_API_GRPC_ADDR:         edgeapi:8003
-      EDGE_API_ADMIN_NODE_ID:     ${EDGE_API_ADMIN_NODE_ID:-}
-      EDGE_API_ADMIN_NODE_SECRET: ${EDGE_API_ADMIN_NODE_SECRET:-}
+      EDGE_API_ADMIN_NODE_ID:     ${EDGE_API_ADMIN_NODE_ID:?EDGE_API_ADMIN_NODE_ID required - 跑 edgeapi setup 后从 admin-token.json 取,填 deploy/.env}
+      EDGE_API_ADMIN_NODE_SECRET: ${EDGE_API_ADMIN_NODE_SECRET:?EDGE_API_ADMIN_NODE_SECRET required}
       NODE_ENV:                   ${NODE_ENV:-development}
     ports:
       - "127.0.0.1:${BFF_EDGE_PORT:-4002}:4002"
+    healthcheck:
+      # GET /health 返 200(公开端点,无 token,反映 mode + adminConfigured)
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:4002/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
