@@ -15,6 +15,17 @@ export interface CreateUserInput {
   mobile?: string;
   remark?: string;
   source?: string;         // 一般固定 "aegis-saas",标识 SaaS 来源
+  /**
+   * GoEdge edgeNodeClusters.id(数字),用户所属集群。
+   *
+   * **必须 > 0**,否则 createUser 会写 edgeUsers.clusterId=0,
+   * 之后 createBasicHTTPServer 在 admin 模式下取 user.clusterId 覆盖 req.NodeClusterId,
+   * 校验 `if req.NodeClusterId <= 0 { return invalid 'nodeClusterId' }` 必报错。
+   *
+   * 调用方应从配置注入(如 bff-edge 用 EDGE_DEFAULT_CLUSTER_ID env)。
+   * 不传时仍传 0(向后兼容),但 caller 应处理后续 createServer 的失败。
+   */
+  clusterId?: EdgeClusterId;
 }
 
 export interface UserSummary {

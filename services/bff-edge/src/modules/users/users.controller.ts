@@ -29,14 +29,25 @@ export class UsersController {
    */
   @Post()
   async create(@Body() dto: CreateEdgeUserDto): Promise<CreateEdgeUserResult> {
+    // edgeUsers.clusterId 必须 > 0 — 否则后续 createBasicHTTPServer 报 invalid nodeClusterId
+    // (服务端 admin 模式下覆盖 req.NodeClusterId = FindUserClusterId(userId))
+    // 从 env EDGE_DEFAULT_CLUSTER_ID 注入(默认 1 = setup 时自动建的默认集群)
+    const clusterId = Number(process.env.EDGE_DEFAULT_CLUSTER_ID || "1");
+    if (!Number.isFinite(clusterId) || clusterId <= 0) {
+      throw new HttpException(
+        { code: "EDGE_CONFIG_ERROR", message: "EDGE_DEFAULT_CLUSTER_ID 未配或无效;必须 >0(GoEdge 默认集群通常 id=1)" },
+        HttpStatus.INTERNAL_SERVER_ERROR,
+      );
+    }
     try {
       const u = await this.edgeApi.users.create({
         username: dto.username,
         email: dto.email,
         remark: dto.remark || `saas-tenant-${dto.tenantId}`,
         source: "aegis-saas",
+        clusterId,
       });
-      this.logger.log(`created GoEdge user id=${u.id} username=${u.username} (saas tenantId=${dto.tenantId})`);
+      this.logger.log(`created GoEdge user id=${u.id} username=${u.username} clusterId=${clusterId} (saas tenantId=${dto.tenantId})`);
       return { edgeUserId: u.id, username: u.username };
     } catch (e: any) {
       if (e instanceof NotImplementedError) {

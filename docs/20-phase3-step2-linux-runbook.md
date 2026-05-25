@@ -396,7 +396,75 @@ curl -s -w '\nHTTP=%{http_code}\n' -X POST \
 | 容器 `Exited (1)`,logs 报 "缺少集群凭证" | deploy/.env 没填 EDGE_NODE_CLUSTER_ID/SECRET,或值错(注意 clusterId 是 uniqueId 字符串不是 1) |
 | 容器 Restarting,logs 反复 "Edge Node started ok, pid: N" | 拿到本 commit 前的旧 entrypoint(同 EdgeAPI start fork 问题);`git pull` + `--build` 重建 |
 | 容器 running 但 edgeNodes 表无新行 | autoRegister=0 或 secret 错;`docker compose logs edgenode` 看 register 报错 |
-| createDomain 仍报 `invalid nodeClusterId` | 看 edgeNodes 表是否真有 clusterId=1 的行;若有但 isOn=0,需 admin 在 GoEdge 启用该节点(或直接 SQL `UPDATE edgeNodes SET isOn=1 WHERE id=N`) |
+
+##### 3.3.7 createDomain 仍报 `invalid nodeClusterId`(edgeNodes 已有节点也报)
+
+**根因**:GoEdge `ServerService.CreateBasicHTTPServer` 在 **admin 模式**下(bff-edge 用 admin
+token 调,即 ValidateAdminAndUser 返 adminId>0 + userId=0)执行:
+
+```go
+// upstream/EdgeAPI/internal/rpc/services/service_server.go:218-237
+} else if adminId > 0 && req.UserId > 0 && req.NodeClusterId <= 0 {
+    nodeClusterId, err := models.SharedUserDAO.FindUserClusterId(tx, req.UserId)
+    req.NodeClusterId = nodeClusterId    // **覆盖客户端传值**
+}
+if req.NodeClusterId <= 0 {
+    return nil, errors.New("invalid 'nodeClusterId'")
+}
+```
+
+`FindUserClusterId` 实际是 `SELECT clusterId FROM edgeUsers WHERE id=N`。
+**bff-edge 客户端无论传什么 nodeClusterId 都被覆盖**,真正决定值的是 **edgeUsers.clusterId 字段**。
+
+之前 `GrpcUsersService.create` 硬编码 `nodeClusterId: 0` → 写入 edgeUsers.clusterId=0
+→ 后续 createServer 取 0 → 报错。
+
+**已修复**(commit `<本次>`):
+1. SDK `CreateUserInput` 加 `clusterId?` 字段
+2. bff-edge `UsersController` 从 env `EDGE_DEFAULT_CLUSTER_ID`(默认 1) 注入到 SDK
+3. deploy/.env.example + docker-compose.dev.yml 加 EDGE_DEFAULT_CLUSTER_ID=1
+
+**对已存在 edgeUser 紧急修补 SQL**(不需要删用户重建):
+```bash
+# 1. 看现状(应见 clusterId=0)
+docker compose -f deploy/docker-compose.dev.yml exec mysql \
+    mysql -uroot -p"$MYSQL_ROOT_PASSWORD" db_edge -e \
+    "SELECT id, username, clusterId, source FROM edgeUsers;"
+
+# 2. 修补:把所有 clusterId=0 的 user 改为 1(默认集群)
+docker compose -f deploy/docker-compose.dev.yml exec mysql \
+    mysql -uroot -p"$MYSQL_ROOT_PASSWORD" db_edge -e \
+    "UPDATE edgeUsers SET clusterId=1 WHERE clusterId=0;
+     SELECT id, username, clusterId FROM edgeUsers;"
+
+# 3. 同时把对应 saas-svc Tenant.edgeUserId 关联确认(应已存在,本步无须改)
+```
+
+**完整重启步骤**(代码层修复 + 数据层修补):
+```bash
+git pull   # 拉到本 commit
+
+# 修补 edgeUsers.clusterId(上面 SQL)
+# 重启 bff-edge 拿到新 SDK + EDGE_DEFAULT_CLUSTER_ID env
+docker compose -f deploy/docker-compose.dev.yml --env-file deploy/.env \
+    --profile bff up -d --build bff-edge
+
+# 重测 createDomain
+curl -s -w '\nHTTP=%{http_code}\n' -X POST \
+    -H 'Content-Type: application/json' \
+    -H "Authorization: Bearer $JWT" \
+    -d '{"domain":"example.com","originHost":"origin.foo.com:80"}' \
+    http://127.0.0.1:4001/api/v1/saas/domains
+# 期望:201 + {edgeDomainId, cnameTarget, status:"dns_pending"}
+```
+
+##### 3.3.8 其他可能(SQL 修后仍失败时)
+
+| 现象 | 排查 |
+| --- | --- |
+| edgeNodes 表 clusterId=1 但 isOn=0 | admin 在 GoEdge 启用该节点 / `UPDATE edgeNodes SET isOn=1 WHERE id=N` |
+| edgeNodes.isInstalled=0 | EdgeNode 启动了但 GoEdge 认为未完成 install 流程;查 edgenode container logs;通常 register 后会自动设 1 |
+| 同一 domain 跨 cluster 已被占 | logs 含 `domain 'xxx' already created by other server`,改用新域名或先删旧 server |
 
 ---
 

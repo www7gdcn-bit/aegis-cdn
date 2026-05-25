@@ -21,6 +21,11 @@ export class GrpcUsersService implements UsersService {
   async create(input: CreateUserInput): Promise<UserSummary> {
     if (!input.username) throw new EdgeApiError("CreateUserInput.username required");
 
+    // nodeClusterId 必须 > 0 — 写入 edgeUsers.clusterId,
+    // 后续 ServerService.createBasicHTTPServer 在 admin 模式下会:
+    //   req.NodeClusterId = SharedUserDAO.FindUserClusterId(req.UserId)
+    // 即从 edgeUsers 表取 clusterId 覆盖客户端传值;若为 0 则报 "invalid 'nodeClusterId'"。
+    // 调用方应从配置注入(bff-edge 用 EDGE_DEFAULT_CLUSTER_ID env)。
     const req = {
       username: input.username,
       password: "",                                // SaaS 接管登录,GoEdge 侧无需明文密码
@@ -30,7 +35,7 @@ export class GrpcUsersService implements UsersService {
       email: input.email || "",
       remark: input.remark || "managed by aegis-saas",
       source: input.source || "aegis-saas",
-      nodeClusterId: 0,                            // 0 = 平台默认集群(GoEdge 会自动选)
+      nodeClusterId: input.clusterId ?? 0,         // 必须传真 id;0 会导致 createServer 后续失败
     };
 
     return new Promise<UserSummary>((resolve, reject) => {

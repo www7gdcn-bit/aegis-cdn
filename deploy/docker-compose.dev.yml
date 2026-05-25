@@ -258,6 +258,8 @@ services:
       EDGE_API_GRPC_ADDR:         edgeapi:8003
       EDGE_API_ADMIN_NODE_ID:     ${EDGE_API_ADMIN_NODE_ID:?EDGE_API_ADMIN_NODE_ID required - 跑 edgeapi setup 后从 admin-token.json 取,填 deploy/.env}
       EDGE_API_ADMIN_NODE_SECRET: ${EDGE_API_ADMIN_NODE_SECRET:?EDGE_API_ADMIN_NODE_SECRET required}
+      # 创建 GoEdge user 时写入 edgeUsers.clusterId(否则 createServer 报 invalid nodeClusterId)
+      EDGE_DEFAULT_CLUSTER_ID:    ${EDGE_DEFAULT_CLUSTER_ID:-1}
       NODE_ENV:                   ${NODE_ENV:-development}
     ports:
       - "127.0.0.1:${BFF_EDGE_PORT:-4002}:4002"
