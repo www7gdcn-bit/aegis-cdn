@@ -39,17 +39,20 @@ export class UsersController {
         HttpStatus.INTERNAL_SERVER_ERROR,
       );
     }
+    const sdkInput = {
+      username: dto.username,
+      email: dto.email,
+      remark: dto.remark || `saas-tenant-${dto.tenantId}`,
+      source: "aegis-saas",
+      clusterId,
+    };
+    this.logger.log(`createUser payload: ${JSON.stringify({ ...sdkInput, tenantId: dto.tenantId })}`);
     try {
-      const u = await this.edgeApi.users.create({
-        username: dto.username,
-        email: dto.email,
-        remark: dto.remark || `saas-tenant-${dto.tenantId}`,
-        source: "aegis-saas",
-        clusterId,
-      });
+      const u = await this.edgeApi.users.create(sdkInput);
       this.logger.log(`created GoEdge user id=${u.id} username=${u.username} clusterId=${clusterId} (saas tenantId=${dto.tenantId})`);
       return { edgeUserId: u.id, username: u.username };
     } catch (e: any) {
+      this.logger.error(`createUser FAIL ${e?.code != null ? `code=${e.code} ` : ""}msg=${e?.message || e} | payload=${JSON.stringify({ ...sdkInput, tenantId: dto.tenantId })}`);
       if (e instanceof NotImplementedError) {
         throw new HttpException(
           { code: "EDGE_API_NOT_READY", message: "EdgeAPI SDK in placeholder mode", detail: e.message },

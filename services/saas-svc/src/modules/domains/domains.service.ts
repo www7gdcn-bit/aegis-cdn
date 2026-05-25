@@ -112,20 +112,24 @@ export class DomainsService {
     });
 
     // 调 bff-edge — 失败立即写 status=failed 返回 502
+    const bffPayload = {
+      tenantId,
+      edgeUserId: tenant.edgeUserId,
+      serverNames: [domain, cnameTarget],
+      originAddrs: [originAddr || defaultOrigin],
+    };
+    this.logger.log(`POST bff-edge /internal/edge/domains payload=${JSON.stringify(bffPayload)}`);
+
     let res: Response;
     try {
       res = await fetch(`${this.bffBase}/internal/edge/domains`, {
         method: "POST",
         headers: this.headers(),
-        body: JSON.stringify({
-          tenantId,
-          edgeUserId: tenant.edgeUserId,
-          serverNames: [domain, cnameTarget],
-          originAddrs: [originAddr || defaultOrigin],
-        }),
+        body: JSON.stringify(bffPayload),
       });
     } catch (e: any) {
       await this.markFailed(created.id, "BFF_EDGE_UNREACHABLE", String(e?.message || e));
+      this.logger.error(`bff-edge UNREACHABLE: ${e?.message || e} | payload=${JSON.stringify(bffPayload)}`);
       throw new BadRequestException({ code: "BFF_EDGE_UNREACHABLE", message: String(e?.message || e) });
     }
 
@@ -135,6 +139,7 @@ export class DomainsService {
       const code = body?.code || `HTTP_${res.status}`;
       const reason = body?.message || `bff-edge returned ${res.status}`;
       await this.markFailed(created.id, code, reason);
+      this.logger.error(`bff-edge ${res.status} ${code}: ${reason} | payload=${JSON.stringify(bffPayload)}`);
       // 把 bff-edge 的 HTTP 状态码原样透回(409/400/502 等)
       throw new BadRequestException({ code, message: reason, bffStatus: res.status });
     }

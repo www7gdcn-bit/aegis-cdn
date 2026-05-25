@@ -29,19 +29,46 @@ export class DomainsController {
 
   @Post()
   async create(@Body() dto: CreateEdgeDomainDto): Promise<CreateEdgeDomainResult> {
+    // ⚠️ GoEdge v1.3.9 服务端 CreateBasicHTTPServer 有逻辑陷阱(service_server.go:218-237):
+    //   } else if adminId > 0 && req.UserId > 0 && req.NodeClusterId <= 0 {
+    //       nodeClusterId, _ := SharedUserDAO.FindUserClusterId(tx, userId)
+    //       // ↑ 用的是 userId(=0,admin 调时)而**不是** req.UserId
+    //       req.NodeClusterId = nodeClusterId  // 取 0,后续 if<=0 报 invalid
+    //   }
+    // 即便我们已经把 edgeUsers.clusterId 设为 1,此 bug 仍触发(因为它查 WHERE id=0)。
+    //
+    // 唯一 workaround:**客户端直接传 nodeClusterId > 0**,跳过整个 else if 分支。
+    // 从 env EDGE_DEFAULT_CLUSTER_ID(默认 1) 注入,与 UsersController 同模式。
+    const envClusterId = Number(process.env.EDGE_DEFAULT_CLUSTER_ID || "1");
+    if (!Number.isFinite(envClusterId) || envClusterId <= 0) {
+      throw new HttpException(
+        { code: "EDGE_CONFIG_ERROR", message: "EDGE_DEFAULT_CLUSTER_ID 未配或无效;必须 >0(GoEdge 默认集群通常 id=1)" },
+        HttpStatus.INTERNAL_SERVER_ERROR,
+      );
+    }
+    // dto.clusterId 优先(saas-svc 显式传时);未传则用 env 默认
+    const clusterId = dto.clusterId ?? envClusterId;
+
+    const sdkInput = {
+      edgeUserId: dto.edgeUserId,
+      serverNames: dto.serverNames,
+      originAddrs: dto.originAddrs,
+      clusterId,
+      enableWebsocket: dto.enableWebsocket,
+    };
+    this.logger.log(`createBasicHTTPServer payload: ${JSON.stringify(sdkInput)}`);
+
     try {
-      const d = await this.edgeApi.domains.create({
-        edgeUserId: dto.edgeUserId,
-        serverNames: dto.serverNames,
-        originAddrs: dto.originAddrs,
-        clusterId: dto.clusterId,
-        enableWebsocket: dto.enableWebsocket,
-      });
+      const d = await this.edgeApi.domains.create(sdkInput);
       this.logger.log(
-        `created GoEdge server id=${d.serverId} names=[${dto.serverNames.join(",")}] (saas tenantId=${dto.tenantId})`,
+        `created GoEdge server id=${d.serverId} names=[${dto.serverNames.join(",")}] clusterId=${clusterId} (saas tenantId=${dto.tenantId})`,
       );
       return { edgeDomainId: d.serverId, serverNames: dto.serverNames };
     } catch (e: any) {
+      // 失败时打完整 payload(已知 invalid nodeClusterId / domain conflict 等需要 payload 才能诊断)
+      this.logger.error(
+        `createBasicHTTPServer FAIL ${e?.code != null ? `code=${e.code} ` : ""}msg=${e?.message || e} | payload=${JSON.stringify(sdkInput)}`,
+      );
       throw this.mapError(e);
     }
   }

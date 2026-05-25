@@ -260,6 +260,8 @@ services:
       EDGE_API_ADMIN_NODE_SECRET: ${EDGE_API_ADMIN_NODE_SECRET:?EDGE_API_ADMIN_NODE_SECRET required}
       # 创建 GoEdge user 时写入 edgeUsers.clusterId(否则 createServer 报 invalid nodeClusterId)
       EDGE_DEFAULT_CLUSTER_ID:    ${EDGE_DEFAULT_CLUSTER_ID:-1}
+      # SDK gRPC 调试 — on 时每次 gRPC 调用 console.error 打 payload(诊断 GoEdge 校验错)
+      EDGE_API_DEBUG:             ${EDGE_API_DEBUG:-on}
       NODE_ENV:                   ${NODE_ENV:-development}
     ports:
       - "127.0.0.1:${BFF_EDGE_PORT:-4002}:4002"
