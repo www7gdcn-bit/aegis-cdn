@@ -41,18 +41,18 @@ export class GrpcDomainsService implements DomainsService {
       enableWebsocket: input.enableWebsocket ?? false,
     };
 
-    // Debug 日志:EDGE_API_DEBUG=on 时打印 gRPC 实发 payload(诊断 invalid nodeClusterId 等用)
-    if (process.env.EDGE_API_DEBUG === "on") {
-      // eslint-disable-next-line no-console
-      console.error(`[edge-api-sdk] grpc → ServerService.createBasicHTTPServer payload=${JSON.stringify(req)}`);
-    }
+    // ── 总是 console.error 打 gRPC 最终 protobuf payload(原 EDGE_API_DEBUG 门控移除)──
+    // 实测线上 NestJS Logger 在容器里被压制 / 缓冲,看不到 controller 层日志,
+    // SDK 必须无条件打 stderr,docker logs 才一定能抓到 nodeClusterId 真实值。
+    // eslint-disable-next-line no-console
+    console.error(`[edge-api-sdk] grpc → ServerService.createBasicHTTPServer FINAL_PAYLOAD=${JSON.stringify(req)} | input.clusterId=${JSON.stringify(input.clusterId)} input.edgeUserId=${input.edgeUserId}`);
 
     return new Promise<DomainSummary>((resolve, reject) => {
       this.stub.createBasicHTTPServer(req, this.metadata(), (err: grpc.ServiceError | null, res: any) => {
         if (err) {
-          // 失败时**总是**打出 payload(不管 DEBUG flag) — 帮助 root-cause 定位
+          // 失败时再打一次完整 payload + grpc code(与上面入口日志成对,便于 grep)
           // eslint-disable-next-line no-console
-          console.error(`[edge-api-sdk] createBasicHTTPServer FAIL code=${err.code} msg=${err.message} | payload=${JSON.stringify(req)}`);
+          console.error(`[edge-api-sdk] createBasicHTTPServer FAIL grpcCode=${err.code} msg=${err.message} | FINAL_PAYLOAD=${JSON.stringify(req)}`);
           return reject(new EdgeApiError(
             `ServerService.createBasicHTTPServer failed: ${err.message}`,
             err.code != null ? String(err.code) : undefined,

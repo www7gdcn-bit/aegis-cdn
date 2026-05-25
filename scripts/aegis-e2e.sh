@@ -312,13 +312,49 @@ fi
 step "4/7  启动容器并等待就绪"
 
 info "exec: ${COMPOSE[*]} up -d --build mysql redis edgeapi edgenode bff-edge"
-if ! "${COMPOSE[@]}" up -d --build mysql redis edgeapi edgenode bff-edge; then
-    fail "docker compose up 失败 — 看上面的 build / config 报错"
-    action "单独跑:${COMPOSE[*]} build mysql 等子命令看具体错误"
-    tail_relevant_logs
-    summary_exit 1
+COMPOSE_UP_OUT=$(mktemp)
+if "${COMPOSE[@]}" up -d --build mysql redis edgeapi edgenode bff-edge 2>&1 | tee "$COMPOSE_UP_OUT"; then
+    pass "docker compose up 已发出"
+else
+    # ── compose v1 已知 bug 兜底:KeyError: 'ContainerConfig' / 'Config' ──
+    # docker-compose 1.x + docker-engine ≥ 23 时,docker python SDK 返回结构变了,
+    # 导致 compose 在 recreate 阶段抛 KeyError;但 docker 真的把容器跑起来了,
+    # 容器实际状态是 OK 的。直接 FAIL 不合理 — 降级为 warn 继续。
+    if grep -qE "KeyError.*(ContainerConfig|Config)" "$COMPOSE_UP_OUT"; then
+        warn "docker-compose v1 已知 bug:KeyError(docker engine ≥ 23 + compose 1.x 不兼容)"
+        warn "检查关键容器实际状态 ..."
+        all_up=1
+        for c in aegis-mysql aegis-redis aegis-edgeapi aegis-edgenode aegis-bff-edge; do
+            st=$(docker inspect "$c" --format '{{.State.Status}}' 2>/dev/null || echo missing)
+            case "$st" in
+                running)
+                    info "  $c → running"
+                    ;;
+                *)
+                    warn "  $c → $st"
+                    all_up=0
+                    ;;
+            esac
+        done
+        if [ $all_up -eq 1 ]; then
+            warn "compose 报错但所有核心容器已 running — 降级为 warn 继续(容器实际部署是 OK 的)"
+            action "(可选)迁到 docker compose v2 消除此错:apt remove docker-compose && apt install docker-compose-plugin"
+            pass "docker compose up(v1 KeyError 兜底,容器已 running)"
+        else
+            fail "docker compose up 失败 + 部分核心容器未 running(不是单纯的 v1 ContainerConfig 兼容问题)"
+            rm -f "$COMPOSE_UP_OUT"
+            tail_relevant_logs
+            summary_exit 1
+        fi
+    else
+        fail "docker compose up 失败 — 看上面的 build / config 报错"
+        action "单独跑:${COMPOSE[*]} build mysql 等子命令看具体错误"
+        rm -f "$COMPOSE_UP_OUT"
+        tail_relevant_logs
+        summary_exit 1
+    fi
 fi
-pass "docker compose up 已发出"
+rm -f "$COMPOSE_UP_OUT"
 
 wait_healthy() {
     local name="$1"

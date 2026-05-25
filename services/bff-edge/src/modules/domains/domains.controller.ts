@@ -29,6 +29,11 @@ export class DomainsController {
 
   @Post()
   async create(@Body() dto: CreateEdgeDomainDto): Promise<CreateEdgeDomainResult> {
+    // ── 三层 payload 日志(用 console.error 写 stderr,绕开 NestJS Logger level 压制)──
+    // 实测 Linux 服务器上 this.logger.log 不出现在 docker logs,这里直接 stderr 写。
+    // eslint-disable-next-line no-console
+    console.error(`[bff-edge:DomainsController.create] incoming dto=${JSON.stringify(dto)}`);
+
     // ⚠️ GoEdge v1.3.9 服务端 CreateBasicHTTPServer 有逻辑陷阱(service_server.go:218-237):
     //   } else if adminId > 0 && req.UserId > 0 && req.NodeClusterId <= 0 {
     //       nodeClusterId, _ := SharedUserDAO.FindUserClusterId(tx, userId)
@@ -39,8 +44,11 @@ export class DomainsController {
     //
     // 唯一 workaround:**客户端直接传 nodeClusterId > 0**,跳过整个 else if 分支。
     // 从 env EDGE_DEFAULT_CLUSTER_ID(默认 1) 注入,与 UsersController 同模式。
-    const envClusterId = Number(process.env.EDGE_DEFAULT_CLUSTER_ID || "1");
+    const rawEnvClusterId = process.env.EDGE_DEFAULT_CLUSTER_ID;
+    const envClusterId = Number(rawEnvClusterId || "1");
     if (!Number.isFinite(envClusterId) || envClusterId <= 0) {
+      // eslint-disable-next-line no-console
+      console.error(`[bff-edge:DomainsController.create] FAIL EDGE_CONFIG_ERROR rawEnv=${JSON.stringify(rawEnvClusterId)} parsed=${envClusterId}`);
       throw new HttpException(
         { code: "EDGE_CONFIG_ERROR", message: "EDGE_DEFAULT_CLUSTER_ID 未配或无效;必须 >0(GoEdge 默认集群通常 id=1)" },
         HttpStatus.INTERNAL_SERVER_ERROR,
@@ -56,18 +64,23 @@ export class DomainsController {
       clusterId,
       enableWebsocket: dto.enableWebsocket,
     };
-    this.logger.log(`createBasicHTTPServer payload: ${JSON.stringify(sdkInput)}`);
+
+    // 中间层 transformed payload(已确定 clusterId 来源,可与 incoming dto 对比)
+    // eslint-disable-next-line no-console
+    console.error(`[bff-edge:DomainsController.create] transformed sdkInput=${JSON.stringify(sdkInput)} | rawEnvClusterId=${JSON.stringify(rawEnvClusterId)} envClusterId=${envClusterId} dtoClusterId=${JSON.stringify(dto.clusterId)} resolvedClusterId=${clusterId}`);
 
     try {
       const d = await this.edgeApi.domains.create(sdkInput);
-      this.logger.log(
-        `created GoEdge server id=${d.serverId} names=[${dto.serverNames.join(",")}] clusterId=${clusterId} (saas tenantId=${dto.tenantId})`,
+      // eslint-disable-next-line no-console
+      console.error(
+        `[bff-edge:DomainsController.create] OK serverId=${d.serverId} names=[${dto.serverNames.join(",")}] clusterId=${clusterId} (saas tenantId=${dto.tenantId})`,
       );
       return { edgeDomainId: d.serverId, serverNames: dto.serverNames };
     } catch (e: any) {
-      // 失败时打完整 payload(已知 invalid nodeClusterId / domain conflict 等需要 payload 才能诊断)
-      this.logger.error(
-        `createBasicHTTPServer FAIL ${e?.code != null ? `code=${e.code} ` : ""}msg=${e?.message || e} | payload=${JSON.stringify(sdkInput)}`,
+      // 失败时打 incoming dto + transformed sdkInput + grpc code + msg(三层串)
+      // eslint-disable-next-line no-console
+      console.error(
+        `[bff-edge:DomainsController.create] FAIL grpcCode=${e?.code ?? "?"} msg=${e?.message || e}\n  incomingDto=${JSON.stringify(dto)}\n  transformedSdkInput=${JSON.stringify(sdkInput)}`,
       );
       throw this.mapError(e);
     }
