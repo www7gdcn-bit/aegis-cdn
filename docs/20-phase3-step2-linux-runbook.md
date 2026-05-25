@@ -239,26 +239,51 @@ return                                          // 主进程立刻返回 0
 **正确**:**无参数**调用 `edge-api` → `app_cmd.go` fallback 到 `app.Run(func{ APINode.Start() })` →
 真前台主循环(listen sock + serve gRPC)阻塞,进程不退,容器 healthy。
 
-**已修复**(commit `<本次 commit>`):`deploy/docker/edgeapi-entrypoint.sh` 末尾改为:
+**已修复**(经典容器保活模式:start daemon + tail -F run.log):`deploy/docker/edgeapi-entrypoint.sh` 末尾:
 ```bash
 if [ "$#" -eq 0 ] || [ "${1:-}" = "start" ]; then
-    exec /app/bin/edge-api          # 前台主循环
+    /app/bin/edge-api start          # fork daemon,主进程立刻返回
+    sleep 2
+    touch /app/logs/run.log
+    exec tail -F /app/logs/run.log   # tail 作为容器主进程,保活 + docker logs 输出
 else
-    exec /app/bin/edge-api "$@"     # 保留其他子命令(setup/upgrade/issues/...)便于调试
+    exec /app/bin/edge-api "$@"      # setup/upgrade/issues/token 调试场景
 fi
 ```
 
-**Linux 服务器重启 EdgeAPI 步骤**(此次无须删 volume,db.yaml/admin token 都已正确):
+**优点**:
+- daemon 写文件日志(`/app/logs/run.log`)是 GoEdge 设计,符合上游习惯
+- tail -F 把日志透传到 docker logs,运维直接 `docker compose logs -f edgeapi` 看
+- tail 收 SIGTERM 退出 → docker stop 干净
+
+**缺点**(已知,见健康检查策略):tail 不感知 daemon 崩溃。daemon 崩了 tail 仍跑 → 容器仍 running。
+**healthcheck 必须能识别** daemon 真死亡:
+```yaml
+# docker-compose.dev.yml 中 edgeapi.healthcheck 建议改为:
+healthcheck:
+  test:
+    - CMD-SHELL
+    # ss 监听 + 日志含 'started ok'(setup 跑过的标记)
+    - "ss -tln | grep -q ':8003' && test -f /app/configs/.admin-token.json"
+  interval: 30s
+  timeout: 5s
+  retries: 3
+  start_period: 90s
+```
+
+**Linux 服务器重启 EdgeAPI 步骤**(无须删 volume):
 ```bash
 git pull
 docker compose -f deploy/docker-compose.dev.yml stop edgeapi
 docker compose -f deploy/docker-compose.dev.yml --env-file deploy/.env up -d --build edgeapi
 docker compose -f deploy/docker-compose.dev.yml logs -f edgeapi
 # 期望看到:
-#   ==> exec edge-api (foreground main loop;ignore container CMD=['start']),pid 1 = APINode
-#   [API_NODE]start api node, pid: 1
-#   [API_NODE]listening sock ...
-#   ...(然后阻塞,不再出现 "started ok, pid:")
+#   ==> launching edge-api daemon (start subcommand,fork to background)
+#   Edge API started ok, pid: 12
+#   ==> daemon started;tailing /app/logs/run.log as container PID 1 (foreground keepalive)
+#   2026/05/25 ... [API_NODE]start api node, pid: 12
+#   2026/05/25 ... [API_NODE]listening sock ...
+#   ...(然后跟 run.log 实时输出,不再 Restarting)
 ```
 
 **验证**:

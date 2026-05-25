@@ -96,23 +96,51 @@ if [ ! -f "$MARKER" ]; then
 fi
 
 # ─────────────────────────────────────────
-# 4. exec 主进程(前台主循环) — 关键修复:不能用 `start` 子命令
+# 4. 保活策略 — start daemon + tail -F run.log
 #
-# GoEdge `edge-api start`(app_cmd.go:runStart):
-#     exec.Command(this.exe()).Start()  // fork 子进程后台跑
-#     fmt.Println(... " started ok, pid:", ...)
-#     return                              // 主进程立刻退出
+# 背景:
+#   GoEdge `edge-api start`(app_cmd.go:runStart)是给 systemctl 用的:
+#     exec.Command(this.exe()).Start()        # fork 子进程后台跑
+#     fmt.Println("Edge API started ok, pid:..."); return   # 主进程立刻退出
 #
-# → 容器主进程 = entrypoint = exec edge-api start → 返 0 → 容器认为退出
-#   → restart policy(unless-stopped)拉起 → 又跑 → 又退 → 死循环
+#   若 entrypoint 用 `exec edge-api start`,主进程退出 → 容器 Exit 0
+#   → restart policy 拉起 → 又跑 → 又退 → 无限 Restarting 循环。
 #
-# 正确方式:**无参数** 调用 `edge-api`,触发 app.Run(func{ APINode.Start() })
-# 这是真正的前台主循环(listen sock + serve gRPC),进程不退 → 容器 healthy。
-# 任何其他显式子命令(setup/upgrade/issues/...)按原样 exec,便于调试。
+# 修复(按用户要求采用经典容器保活模式):
+#   1. 普通(非 exec)调用 `edge-api start`:fork 出 daemon 后立即返回,
+#      daemon 子进程脱离 entrypoint 继续运行(写 /app/logs/run.log + listen :8003)
+#   2. 确保 run.log 存在(避免 tail -F 启动时文件不存在)
+#   3. exec tail -F /app/logs/run.log 作为容器主进程:
+#      - 阻塞前台,容器保活
+#      - 同时 docker logs 直接看到 GoEdge run.log 真实内容
+#      - 收到 SIGTERM(docker stop)时 tail 退出 → 容器停止
+#
+# 注:本方案不感知 daemon 崩溃(tail 不知道) — daemon 崩了容器仍 running。
+# healthcheck 应能识别,见 docs/20 §3.2。
+# 显式子命令(setup/upgrade/issues/token/...)按原样 exec,便于 docker exec 调试。
 # ─────────────────────────────────────────
+
+LOG_DIR=/app/logs
+mkdir -p "$LOG_DIR"
+RUN_LOG="$LOG_DIR/run.log"
+
 if [ "$#" -eq 0 ] || [ "${1:-}" = "start" ]; then
-    echo "==> exec edge-api (foreground main loop;ignore container CMD=['start']),pid 1 = APINode"
-    exec /app/bin/edge-api
+    echo "==> launching edge-api daemon (start subcommand,fork to background)"
+    # 非 exec,普通调用 — 返回后继续 entrypoint 后续步骤
+    /app/bin/edge-api start || {
+        echo "[ERROR] edge-api start failed" >&2
+        exit 1
+    }
+
+    # 给 daemon 一点时间初始化 listen sock + 写 run.log
+    sleep 2
+
+    # 确保日志文件存在(避免 tail -F 在文件出现前空跑;daemon 写 run.log 是异步)
+    touch "$RUN_LOG"
+
+    echo "==> daemon started;tailing $RUN_LOG as container PID 1 (foreground keepalive)"
+    # tail -F:文件不存在时等待,文件被 truncate/rotate 时自动重开。容器主进程 = tail
+    exec tail -F "$RUN_LOG"
 else
     echo "==> exec edge-api $*"
     exec /app/bin/edge-api "$@"
