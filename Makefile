@@ -17,7 +17,7 @@ SCRIPTS := scripts
 N ?= 50
 Q ?=
 
-.PHONY: help up down restart check e2e dev report \
+.PHONY: help up down restart check e2e dev report doctor ai-repair auto-pilot auto \
         check-docker check-mysql check-redis check-edgeapi check-bff check-edgenode \
         test-domain test-origin test-proxy test-80 test-443 test-ssl test-acme test-api \
         db-check db-repair \
@@ -54,7 +54,15 @@ help:
 	@echo "  make report            完整排障报告(tar.gz)"
 	@echo "  make dev               交互菜单"
 	@echo ""
-	@echo "Env 覆盖:TEST_REAL_DOMAIN / TEST_ORIGIN / TEST_DOMAIN / TEST_USERNAME 等"
+	@echo "  ─── AI Auto-Pilot(自检 → 自修 → 复检循环)───"
+	@echo "  make auto              ★★ 一键自治:git pull + auto-pilot"
+	@echo "  make auto-pilot        check → doctor → re-check → AI repair → … 最多 5 轮"
+	@echo "  make doctor            规则化自动修复(无 AI,确定性 fix)"
+	@echo "  make ai-repair         调 Claude 分析 check 输出并执行 JSON action"
+	@echo "                         (需 ANTHROPIC_API_KEY;默认 dry-run,AI_AUTO_EXEC=1 真执行)"
+	@echo ""
+	@echo "Env 覆盖:TEST_REAL_DOMAIN / TEST_ORIGIN / TEST_DOMAIN / TEST_USERNAME"
+	@echo "          ANTHROPIC_API_KEY / ANTHROPIC_MODEL / AI_AUTO_EXEC / AUTO_PILOT_MAX_ROUNDS"
 
 up:         ; @bash $(SCRIPTS)/up.sh
 down:       ; @bash $(SCRIPTS)/down.sh $(if $(V),--volumes,)
@@ -88,3 +96,8 @@ logs-edgenode:; @bash $(SCRIPTS)/logs-edgenode.sh $(N)
 e2e:          ; @bash $(SCRIPTS)/e2e.sh
 report:       ; @bash $(SCRIPTS)/report.sh
 dev:          ; @bash $(SCRIPTS)/dev.sh
+
+doctor:       ; @bash $(SCRIPTS)/doctor.sh
+ai-repair:    ; @bash $(SCRIPTS)/ai-repair.sh
+auto-pilot:   ; @bash $(SCRIPTS)/auto-pilot.sh
+auto:         ; @bash $(SCRIPTS)/auto-pilot.sh
