@@ -20,6 +20,7 @@ Q ?=
 .PHONY: help up down restart check e2e dev report doctor ai-repair auto-pilot auto \
         check-docker check-mysql check-redis check-edgeapi check-bff check-edgenode \
         test-domain test-origin test-proxy test-80 test-443 test-ssl test-acme test-api \
+        test-self-signed \
         db-check db-repair \
         logs logs-edgeapi logs-bff logs-edgenode
 
@@ -44,6 +45,8 @@ help:
 	@echo "  make test-origin       源站直连"
 	@echo "  make test-proxy        完整反代链路(domain+80+443+origin+ssl)"
 	@echo "  make test-80 / test-443 / test-ssl / test-acme / test-api"
+	@echo "  make test-self-signed              一键自签证书 + 绑 server + 验 HTTPS"
+	@echo "                                     (D=domain S=serverId 可覆盖,默认 static.ddos6tfanghu.com / 3)"
 	@echo ""
 	@echo "  ─── 日志 ───"
 	@echo "  make logs              聚合(N=200 Q=ERROR 调行数+grep)"
@@ -84,6 +87,7 @@ test-443:     ; @bash $(SCRIPTS)/test-443.sh
 test-ssl:     ; @bash $(SCRIPTS)/test-ssl.sh
 test-acme:    ; @bash $(SCRIPTS)/test-acme.sh
 test-api:     ; @bash $(SCRIPTS)/test-api.sh
+test-self-signed: ; @bash $(SCRIPTS)/test-self-signed-ssl.sh $(D) $(S)
 
 db-check:     ; @bash $(SCRIPTS)/db-check.sh
 db-repair:    ; @bash $(SCRIPTS)/db-repair.sh
