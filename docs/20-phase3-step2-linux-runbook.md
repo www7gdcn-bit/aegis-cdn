@@ -209,6 +209,71 @@ docker compose -f deploy/docker-compose.dev.yml exec edgeapi cat /app/configs/db
 
 go-sql-driver/mysql DSN 解析从右向左找 `@tcp(`,所以密码含单个 `@` 通常 OK;含 `?` 或 `/` 会出问题。
 
+#### 3.2 setup 通过后容器一直 `Restarting`,logs 反复输出 "Edge API started ok, pid: N"
+
+**现象**:
+```bash
+docker logs --tail=120 aegis-edgeapi
+# 反复看到:
+# Edge API started ok, pid: 12
+# Edge API started ok, pid: 13
+# Edge API started ok, pid: 14
+docker inspect aegis-edgeapi --format '{{.State.ExitCode}} {{.State.Status}}'
+# 0 restarting
+```
+
+**根因**:GoEdge `edge-api start` 子命令(`upstream/EdgeAPI/internal/apps/app_cmd.go:runStart`):
+```go
+cmd := exec.Command(this.exe())
+cmd.Start()                                    // fork 子进程后台跑
+fmt.Println(... " started ok, pid:", ...)
+return                                          // 主进程立刻返回 0
+```
+
+这是给系统级 `systemctl start edge-api` 用的 — fork 一个 daemon 然后命令本身退出。
+但**容器主进程退出 = 容器死**,再被 `restart: unless-stopped` 拉起 → 循环。
+
+之前 `Dockerfile` `CMD ["start"]` + entrypoint `exec /app/bin/edge-api "$@"` →
+`exec edge-api start` → fork 后台 + exit 0 → 容器 Restarting 循环。
+
+**正确**:**无参数**调用 `edge-api` → `app_cmd.go` fallback 到 `app.Run(func{ APINode.Start() })` →
+真前台主循环(listen sock + serve gRPC)阻塞,进程不退,容器 healthy。
+
+**已修复**(commit `<本次 commit>`):`deploy/docker/edgeapi-entrypoint.sh` 末尾改为:
+```bash
+if [ "$#" -eq 0 ] || [ "${1:-}" = "start" ]; then
+    exec /app/bin/edge-api          # 前台主循环
+else
+    exec /app/bin/edge-api "$@"     # 保留其他子命令(setup/upgrade/issues/...)便于调试
+fi
+```
+
+**Linux 服务器重启 EdgeAPI 步骤**(此次无须删 volume,db.yaml/admin token 都已正确):
+```bash
+git pull
+docker compose -f deploy/docker-compose.dev.yml stop edgeapi
+docker compose -f deploy/docker-compose.dev.yml --env-file deploy/.env up -d --build edgeapi
+docker compose -f deploy/docker-compose.dev.yml logs -f edgeapi
+# 期望看到:
+#   ==> exec edge-api (foreground main loop;ignore container CMD=['start']),pid 1 = APINode
+#   [API_NODE]start api node, pid: 1
+#   [API_NODE]listening sock ...
+#   ...(然后阻塞,不再出现 "started ok, pid:")
+```
+
+**验证**:
+```bash
+docker inspect aegis-edgeapi --format '{{.State.Status}} {{.State.Restarting}}'
+# 期望:running false
+
+# 端口确认
+docker compose -f deploy/docker-compose.dev.yml exec edgeapi netstat -tlnp 2>/dev/null \
+    | grep -E '8003|8004' || \
+    docker compose -f deploy/docker-compose.dev.yml exec edgeapi sh -c \
+    'ss -tlnp 2>/dev/null | grep -E "8003|8004"' || true
+# 期望:0.0.0.0:8003 LISTEN(gRPC)
+```
+
 ---
 
 ## 4. 启动 bff-edge(宿主跑,grpc 模式)

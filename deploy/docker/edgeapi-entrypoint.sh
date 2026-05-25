@@ -96,6 +96,24 @@ if [ ! -f "$MARKER" ]; then
 fi
 
 # ─────────────────────────────────────────
-# 4. exec 主进程(支持 docker compose stop 接收信号)
+# 4. exec 主进程(前台主循环) — 关键修复:不能用 `start` 子命令
+#
+# GoEdge `edge-api start`(app_cmd.go:runStart):
+#     exec.Command(this.exe()).Start()  // fork 子进程后台跑
+#     fmt.Println(... " started ok, pid:", ...)
+#     return                              // 主进程立刻退出
+#
+# → 容器主进程 = entrypoint = exec edge-api start → 返 0 → 容器认为退出
+#   → restart policy(unless-stopped)拉起 → 又跑 → 又退 → 死循环
+#
+# 正确方式:**无参数** 调用 `edge-api`,触发 app.Run(func{ APINode.Start() })
+# 这是真正的前台主循环(listen sock + serve gRPC),进程不退 → 容器 healthy。
+# 任何其他显式子命令(setup/upgrade/issues/...)按原样 exec,便于调试。
 # ─────────────────────────────────────────
-exec /app/bin/edge-api "$@"
+if [ "$#" -eq 0 ] || [ "${1:-}" = "start" ]; then
+    echo "==> exec edge-api (foreground main loop;ignore container CMD=['start']),pid 1 = APINode"
+    exec /app/bin/edge-api
+else
+    echo "==> exec edge-api $*"
+    exec /app/bin/edge-api "$@"
+fi
