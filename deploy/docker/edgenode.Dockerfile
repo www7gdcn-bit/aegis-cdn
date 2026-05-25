@@ -1,10 +1,10 @@
-# deploy/docker/edgenode.Dockerfile — Phase 1 Step 3
+# deploy/docker/edgenode.Dockerfile
 #
 # 多阶段构建 GoEdge EdgeNode 边缘节点镜像。
 #
 # 与 edgeapi.Dockerfile 的关键区别:
-#   - EdgeNode 必需 cgo(libinjection / libwebp / nftables)
-#   - 因此 CGO_ENABLED=1,且 builder/runtime 都装相应系统库
+#   - EdgeNode 必需 cgo(libinjection vendored 源码 + libwebp 系统库 + nftables 系统工具)
+#   - 因此 CGO_ENABLED=1,builder 需要 g++ + libwebp-dev,runtime 需要 libwebp7
 #
 # 构建上下文必须是仓库根(EdgeNode 用 `replace ../EdgeCommon` 依赖 EdgeCommon)。
 #
@@ -14,7 +14,7 @@
 ARG GO_VERSION=1.21
 
 # ═══════════════════════════════════════════════════════════════
-# Stage 1: builder(带 cgo 工具链 + libinjection / libwebp 开发包)
+# Stage 1: builder(带 cgo 工具链 + libwebp 开发包)
 # ═══════════════════════════════════════════════════════════════
 FROM golang:${GO_VERSION}-bookworm AS builder
 
@@ -25,15 +25,19 @@ ENV GOPROXY=https://proxy.golang.org,direct \
     GOOS=linux \
     GOARCH=amd64
 
-# cgo 系统依赖:
-#   build-essential — gcc/make 等
-#   libinjection-dev — internal/waf/injectionutils 必需
-#   libwebp-dev      — github.com/iwind/gowebp 必需
-#   rsync            — overlay 注入
+# cgo 系统依赖(Debian bookworm 实际可用包):
+#   build-essential — gcc/make 等 C 工具链
+#   libwebp-dev     — github.com/iwind/gowebp 必需(系统库 binding)
+#   rsync           — overlay 注入用
+#   pkg-config      — cgo 链接 .so 时查询 -L/-l 标志
+#
+# 注意:**不装** libinjection-dev — Debian bookworm 源没有此包,且 EdgeNode 已
+# vendor libinjection 源码于 upstream/EdgeNode/internal/waf/injectionutils/libinjection/,
+# cgo 通过 `#cgo CFLAGS: -O2 -I./libinjection/src` + 直接编译同目录 libinjection_sqli.c
+# /libinjection_xss.c 把 libinjection 静态链入 edge-node 二进制,无需系统包。
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
         build-essential \
-        libinjection-dev \
         libwebp-dev \
         rsync \
         pkg-config \
@@ -69,19 +73,22 @@ RUN if [ -z "$BUILD_TAGS" ]; then \
     fi
 
 # ═══════════════════════════════════════════════════════════════
-# Stage 2: runtime(带 cgo so + 内核工具)
+# Stage 2: runtime
 # ═══════════════════════════════════════════════════════════════
 FROM debian:bookworm-slim AS runtime
 
 # 运行期 so:
-#   libinjection 与 libwebp 的 .so(只装 runtime 包,不带 -dev)
+#   libwebp7        — gowebp cgo binding 动态链接
 #   nftables / iptables — DDoS 内核防火墙集成(EdgeNode internal/firewalls/)
 #   ca-certificates / tzdata — 通用
+#   gettext-base    — envsubst,渲染 cluster.yaml
+#
+# 注意:**不装** libinjection2 — libinjection 已被 vendored 源码静态链入二进制,运行时
+# 不需要系统库。Debian bookworm 源也没有此包。
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
         ca-certificates \
         tzdata \
-        libinjection2 \
         libwebp7 \
         nftables \
         iptables \
