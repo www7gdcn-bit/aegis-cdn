@@ -299,6 +299,105 @@ docker compose -f deploy/docker-compose.dev.yml exec edgeapi netstat -tlnp 2>/de
 # 期望:0.0.0.0:8003 LISTEN(gRPC)
 ```
 
+#### 3.3 启动 EdgeNode(集群下必须至少有一个节点,否则 `createDomain` 报 `invalid nodeClusterId`)
+
+**前置事实**:
+- `edgeNodeClusters` 表 setup 时自动创了 id=1 的默认集群(可能名叫 'default' / autoRegister=1)
+- `edgeNodes` 表初始为空 → GoEdge `createBasicHTTPServer(nodeClusterId=N)` 校验
+  "目标集群必须有可部署节点",空集群 → `invalid nodeClusterId`
+- → 必须先起 EdgeNode 容器自动注册到 cluster 1
+
+##### 3.3.1 取 cluster 凭证(用于 EdgeNode 启动鉴权)
+
+EdgeNode 启动需要 `cluster.yaml` 含 `clusterId(uniqueId 字符串,不是数字 id)` + `secret`,
+两者都在 `edgeNodeClusters` 表里:
+
+```bash
+docker compose -f deploy/docker-compose.dev.yml exec mysql \
+    mysql -uroot -p"$MYSQL_ROOT_PASSWORD" db_edge -e \
+    "SELECT id, uniqueId, secret, name, isOn, autoRegister FROM edgeNodeClusters WHERE id=1 \G"
+```
+
+**期望输出**(关注 `uniqueId` + `secret`):
+```
+*************************** 1. row ***************************
+          id: 1
+    uniqueId: AbCdEfGh...                     ← cluster.yaml 的 clusterId
+      secret: xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx    ← cluster.yaml 的 secret
+        name: 默认集群
+        isOn: 1
+autoRegister: 1
+```
+
+注意:**`clusterId` 字段用的是字符串 `uniqueId`,不是数字 `id`**。
+EdgeNode autoRegister=1 时启动自动 register 到 EdgeAPI,在 edgeNodes 表新建一行。
+
+##### 3.3.2 填进 deploy/.env
+
+```bash
+# 编辑 deploy/.env(替换为上一步取到的实际值)
+EDGE_NODE_CLUSTER_ID=<uniqueId 字符串>
+EDGE_NODE_CLUSTER_SECRET=<secret>
+```
+
+##### 3.3.3 build + 起 EdgeNode 容器
+
+```bash
+docker compose -f deploy/docker-compose.dev.yml --env-file deploy/.env \
+    up -d --build edgenode
+
+# 跟日志(首次 build cgo 装 libinjection/libwebp ~3-5min)
+docker compose -f deploy/docker-compose.dev.yml logs -f edgenode
+```
+
+**期望日志**:
+```
+==> cluster.yaml rendered (endpoints=http://edgeapi:8003 clusterId=AbCdEfGh...)
+==> launching edge-node daemon (start subcommand,fork to background)
+Edge Node started ok, pid: N
+==> daemon started;tailing /app/logs/run.log as container PID 1 (foreground keepalive)
+2026/05/25 ... [NODE]start ...
+2026/05/25 ... [NODE]register to api server ...
+2026/05/25 ... [NODE]registered, nodeId=...
+```
+
+##### 3.3.4 验证 edgeNodes 表新行
+
+```bash
+docker compose -f deploy/docker-compose.dev.yml exec mysql \
+    mysql -uroot -p"$MYSQL_ROOT_PASSWORD" db_edge -e \
+    "SELECT id, clusterId, uniqueId, name, status, isOn, isUp, isInstalled FROM edgeNodes \G"
+```
+
+**期望**:至少一行 `clusterId=1, isOn=1, isUp=1`(或 isInstalled=1)。
+
+容器健康:
+```bash
+docker inspect aegis-edgenode --format '{{.State.Status}} {{.State.Restarting}}'
+# 期望:running false(不是 restarting)
+```
+
+##### 3.3.5 重测 createDomain(应不再报 invalid nodeClusterId)
+
+```bash
+JWT="<saas-svc user JWT>"
+curl -s -w '\nHTTP=%{http_code}\n' -X POST \
+    -H 'Content-Type: application/json' \
+    -H "Authorization: Bearer $JWT" \
+    -d '{"domain":"example.com","originHost":"origin.foo.com:80"}' \
+    http://127.0.0.1:4001/api/v1/saas/domains
+# 期望:201 + {edgeDomainId, cnameTarget, status:"dns_pending", ...}
+```
+
+##### 3.3.6 EdgeNode 排障
+
+| 现象 | 排查 |
+| --- | --- |
+| 容器 `Exited (1)`,logs 报 "缺少集群凭证" | deploy/.env 没填 EDGE_NODE_CLUSTER_ID/SECRET,或值错(注意 clusterId 是 uniqueId 字符串不是 1) |
+| 容器 Restarting,logs 反复 "Edge Node started ok, pid: N" | 拿到本 commit 前的旧 entrypoint(同 EdgeAPI start fork 问题);`git pull` + `--build` 重建 |
+| 容器 running 但 edgeNodes 表无新行 | autoRegister=0 或 secret 错;`docker compose logs edgenode` 看 register 报错 |
+| createDomain 仍报 `invalid nodeClusterId` | 看 edgeNodes 表是否真有 clusterId=1 的行;若有但 isOn=0,需 admin 在 GoEdge 启用该节点(或直接 SQL `UPDATE edgeNodes SET isOn=1 WHERE id=N`) |
+
 ---
 
 ## 4. 启动 bff-edge

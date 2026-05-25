@@ -66,6 +66,38 @@ EOF
 echo "==> cluster.yaml rendered (endpoints=${AEGIS_EDGE_API_ENDPOINTS} clusterId=${AEGIS_CLUSTER_ID})"
 
 # ─────────────────────────────────────────
-# 3. exec 主进程
+# 3. 保活策略 — start daemon + tail -F run.log(同 EdgeAPI entrypoint 模式)
+#
+# GoEdge `edge-node start`(EdgeNode/internal/apps/app_cmd.go:runStart 同 EdgeAPI):
+#   cmd := exec.Command(this.exe())
+#   cmd.Start()                              # fork 子进程后台跑
+#   fmt.Println("Edge Node started ok, pid: N"); return  # 主进程立刻 exit 0
+#
+# 容器中 `exec edge-node start` → 主进程 exit 0 → docker 认为容器死
+# → restart: unless-stopped 拉起 → 又跑 → 又退 → 无限 Restarting 循环
+#
+# 修复:
+#   1. 非 exec 调用 edge-node start → fork daemon,主进程立即返回
+#   2. sleep 2 等 daemon 初始化 + 开始写 run.log
+#   3. touch run.log 防 tail -F 文件不存在
+#   4. exec tail -F /app/logs/run.log 作为容器主进程,前台保活 + docker logs 直出 GoEdge 日志
 # ─────────────────────────────────────────
-exec /app/bin/edge-node "$@"
+
+LOG_DIR=/app/logs
+mkdir -p "$LOG_DIR"
+RUN_LOG="$LOG_DIR/run.log"
+
+if [ "$#" -eq 0 ] || [ "${1:-}" = "start" ]; then
+    echo "==> launching edge-node daemon (start subcommand,fork to background)"
+    /app/bin/edge-node start || {
+        echo "[ERROR] edge-node start failed" >&2
+        exit 1
+    }
+    sleep 2
+    touch "$RUN_LOG"
+    echo "==> daemon started;tailing $RUN_LOG as container PID 1 (foreground keepalive)"
+    exec tail -F "$RUN_LOG"
+else
+    echo "==> exec edge-node $*"
+    exec /app/bin/edge-node "$@"
+fi
